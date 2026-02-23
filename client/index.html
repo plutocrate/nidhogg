@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NIDHOGG — GROTTO DUEL</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+    }
+    #game-canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #ui-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 10;
+    }
+    /* Loading screen */
+    #loading {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: #0a1a12;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.5s;
+    }
+    #loading h1 {
+      color: #4ecdc4;
+      font-size: 48px;
+      letter-spacing: 16px;
+      text-transform: uppercase;
+      text-shadow: 0 0 30px #4ecdc4;
+      margin-bottom: 24px;
+    }
+    #loading .sub {
+      color: #2a8a7c;
+      font-size: 14px;
+      letter-spacing: 6px;
+    }
+    #loading .bar-wrap {
+      margin-top: 40px;
+      width: 300px;
+      height: 3px;
+      background: #1a3a2c;
+    }
+    #loading .bar-fill {
+      height: 100%;
+      background: #4ecdc4;
+      width: 0%;
+      transition: width 0.2s;
+    }
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <h1>Nidhogg</h1>
+    <div class="sub">GROTTO DUEL</div>
+    <div class="bar-wrap"><div class="bar-fill" id="load-bar"></div></div>
+  </div>
+  <canvas id="game-canvas"></canvas>
+  <div id="ui-overlay"></div>
+
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

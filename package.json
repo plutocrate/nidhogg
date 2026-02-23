@@ -1,0 +1,14 @@
+{
+  "name": "nidhogg-grotto-duel",
+  "version": "1.0.0",
+  "description": "Nidhogg-style 1v1 duel — online multiplayer",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server/server.js",
+    "dev":   "node server/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
