@@ -299,9 +299,6 @@ wss.on('connection', (ws) => {
   let room = null;
   let pid  = null;
 
-  // Set max buffered amount to avoid memory bloat on slow clients
-  ws.bufferedAmount = 0;
-
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
