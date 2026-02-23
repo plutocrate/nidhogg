@@ -1,4 +1,4 @@
-// game.js — Nidhogg Grotto Duel
+// game.js
 import { InputManager } from './input.js';
 import { AudioManager }  from './audio.js';
 
@@ -15,36 +15,32 @@ const MAJORITY   = 3;
 const SCALE      = 3;
 
 const IMG_CACHE = {};
-function cachedImage(src) {
-  if (!IMG_CACHE[src]) { const i=new Image(); i.src=src; IMG_CACHE[src]=i; }
+function cachedImage(src){
+  if(!IMG_CACHE[src]){ const i=new Image(); i.src=src; IMG_CACHE[src]=i; }
   return IMG_CACHE[src];
 }
 
 const DEFS = {
-  knight: { src:'assets/Knight_anin.png', fw:48, fh:32,
-    anims:{
-      idle:  {row:0,frames:[0,1,2,3,4,5,6],fps:8},
-      run:   {row:1,frames:[0,1,2,3,4,5,6],fps:12},
-      crouch:{row:2,frames:[0],fps:4},
-      attack:{row:4,frames:[0,1,2,3,4,5,6,7,8,9,10,11,12,13],fps:28},
-      jump:  {row:5,frames:[0,1],fps:8},
-      death: {row:3,frames:[0],fps:4},
-    }
-  },
-  thief: { src:'assets/Thief_anim.png', fw:48, fh:32,
-    anims:{
-      idle:  {row:0,frames:[0,1,2,3,4,5,6,7],fps:8},
-      run:   {row:1,frames:[0,1,2,3,4,5,6],fps:12},
-      crouch:{row:3,frames:[0],fps:4},
-      attack:{row:2,frames:[0,1,2,3,4,5],fps:24},
-      jump:  {row:4,frames:[0,1],fps:8},
-      death: {row:3,frames:[3],fps:4},
-    }
-  },
+  knight:{ src:'assets/Knight_anin.png', fw:48, fh:32, anims:{
+    idle:  {row:0,frames:[0,1,2,3,4,5,6],fps:8},
+    run:   {row:1,frames:[0,1,2,3,4,5,6],fps:12},
+    crouch:{row:2,frames:[0],fps:4},
+    attack:{row:4,frames:[0,1,2,3,4,5,6,7,8,9,10,11,12,13],fps:28},
+    jump:  {row:5,frames:[0,1],fps:8},
+    death: {row:3,frames:[0],fps:4},
+  }},
+  thief:{ src:'assets/Thief_anim.png', fw:48, fh:32, anims:{
+    idle:  {row:0,frames:[0,1,2,3,4,5,6,7],fps:8},
+    run:   {row:1,frames:[0,1,2,3,4,5,6],fps:12},
+    crouch:{row:3,frames:[0],fps:4},
+    attack:{row:2,frames:[0,1,2,3,4,5],fps:24},
+    jump:  {row:4,frames:[0,1],fps:8},
+    death: {row:3,frames:[3],fps:4},
+  }},
 };
 
 class Sprite {
-  constructor(key) {
+  constructor(key){
     this.def=DEFS[key]; this.img=cachedImage(this.def.src);
     this.anim='idle'; this.frame=0; this.timer=0; this.done=false; this.flipX=false;
   }
@@ -74,12 +70,10 @@ class Player {
   constructor(id,x,key){
     this.id=id; this.sprite=new Sprite(key);
     this.x=x; this.y=FLOOR_Y; this.vx=0; this.vy=0;
-    this.grounded=true; this.facingRight=(id===1);
-    this.sprite.flipX=(id===2);
+    this.grounded=true; this.facingRight=(id===1); this.sprite.flipX=(id===2);
     this.alive=true; this.dead=false; this.deadTimer=0;
     this.deadX=0; this.deadY=0; this.deadVx=0; this.deadVy=0; this.deadAngle=0;
-    this.attacking=false; this.attackCd=0; this.crouching=false; this.score=0;
-    this.anim='idle';
+    this.attacking=false; this.attackCd=0; this.crouching=false; this.score=0; this.anim='idle';
   }
   applySnap(s){
     this.x=s.x; this.y=s.y; this.vx=s.vx; this.vy=s.vy;
@@ -142,15 +136,13 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
   ctx.save();
   ctx.font='bold 13px "Courier New"'; ctx.textAlign='left';
   ctx.fillStyle='#e63946'; ctx.shadowColor='#e63946'; ctx.shadowBlur=7;
-  ctx.fillText('KNIGHT'+(myPid===1?' ◀':''), 20,22);
+  ctx.fillText('KNIGHT'+(myPid===1?' ◀':''),20,22);
   ctx.textAlign='right'; ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4';
-  ctx.fillText((myPid===2?'▶ ':'')+' THIEF', w-20,22);
+  ctx.fillText((myPid===2?'▶ ':'')+' THIEF',w-20,22);
   ctx.shadowBlur=0;
-  ctx.textAlign='center'; ctx.font='bold 12px "Courier New"';
-  ctx.fillStyle='rgba(255,255,255,0.48)';
+  ctx.textAlign='center'; ctx.font='bold 12px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.48)';
   ctx.fillText(`ROUND  ${round} / ${maxR}`,w/2,16);
-  const PW=14,PH=10,PG=5,rowW=maxR*(PW+PG)-PG;
-  const rx=w/2-rowW/2, ry=22;
+  const PW=14,PH=10,PG=5,rowW=maxR*(PW+PG)-PG, rx=w/2-rowW/2, ry=22;
   for(let i=0;i<maxR;i++){
     const px=rx+i*(PW+PG);
     ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(px,ry,PW,PH);
@@ -160,13 +152,11 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
   }
   ctx.restore();
   if(msg&&msg.text){
-    const age=msg.age||0;
-    let alpha=Math.min(1,age/110);
+    const age=msg.age||0; let alpha=Math.min(1,age/110);
     if(state==='game_over'&&age>1200) alpha=Math.max(0,1-(age-1200)/800);
     ctx.save(); ctx.globalAlpha=alpha; ctx.textAlign='center';
     ctx.font='bold 60px "Courier New"';
-    ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=10;
-    ctx.strokeText(msg.text,w/2,h/2-14);
+    ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=10; ctx.strokeText(msg.text,w/2,h/2-14);
     ctx.fillStyle=msg.color||'#fff'; ctx.shadowColor=msg.color||'#fff'; ctx.shadowBlur=24;
     ctx.fillText(msg.text,w/2,h/2-14);
     if(msg.sub){
@@ -177,29 +167,26 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
   }
 }
 
-// ─── GAME ─────────────────────────────────────────────────────────────────────
 export class Game {
-  constructor(canvas, opts={}) {
-    this.canvas     = canvas;
-    this.ctx        = canvas.getContext('2d');
-    this.mode       = opts.mode       || 'online';
-    this.roomAction = opts.roomAction || 'create';
-    this.roomCode   = (opts.roomCode  || '').toUpperCase();
-    this.myPid      = 1;  // server will assign
+  constructor(canvas, opts={}){
+    this.canvas  = canvas;
+    this.ctx     = canvas.getContext('2d');
+    this.mode    = opts.mode || 'local';
+    this.myPid   = opts.myPid || 1;
 
-    this.input  = new InputManager(this.mode);
-    this.audio  = new AudioManager();
-    this.fx     = new Particles();
-    this.shake  = new Shake();
-    this.slow   = new SlowMo();
+    this.input = new InputManager(this.mode);
+    this.audio = new AudioManager();
+    this.fx    = new Particles();
+    this.shake = new Shake();
+    this.slow  = new SlowMo();
 
-    this.round    = 1;
-    this.state    = this.mode==='online' ? 'connecting' : 'countdown';
-    this.msg      = null;
-    this.cdVal    = 3; this.cdMs=0;
-    this.roundMs  = 0;
-    this.hitDone  = false;
-    this.tutPhase = 0;
+    this.round   = 1;
+    this.state   = (this.mode==='online') ? 'waiting' : 'countdown';
+    this.msg     = null;
+    this.cdVal   = 3; this.cdMs=0;
+    this.roundMs = 0;
+    this.hitDone = false;
+    this.tutPhase= 0;
 
     this._spawn(0,0);
 
@@ -207,170 +194,103 @@ export class Game {
     this._raf    = null;
     this._tickFn = this._tick.bind(this);
     this._last   = 0;
-    this.ws      = null;
+
+    // Online: receive already-open socket from lobby
+    this.ws     = opts.socket || null;
     this._lastSentInput = null;
   }
 
   _spawn(s1,s2){
-    this.p1 = new Player(1, W*0.28, 'knight');
-    this.p2 = new Player(2, W*0.72, 'thief');
+    this.p1=new Player(1,W*0.28,'knight'); this.p2=new Player(2,W*0.72,'thief');
     this.p1.score=s1; this.p2.score=s2;
     this.p1.facingRight=true;  this.p1.sprite.flipX=false;
     this.p2.facingRight=false; this.p2.sprite.flipX=true;
   }
 
   start(){
-    this.running = true;
+    this.running=true;
     this.audio.init().then(()=>this.audio.startAmbience()).catch(()=>{});
-    this._last = performance.now();
-    this._raf  = requestAnimationFrame(this._tickFn);
-    if(this.mode==='online') this._connectWS();
+    this._last=performance.now();
+    this._raf=requestAnimationFrame(this._tickFn);
+    if(this.mode==='online' && this.ws) this._attachWS();
   }
 
   stop(){
-    this.running = false;
-    if(this._raf){ cancelAnimationFrame(this._raf); this._raf=null; }
+    this.running=false;
+    if(this._raf){cancelAnimationFrame(this._raf);this._raf=null;}
     this.audio.stopAmbience();
     this.input.destroy();
-    if(this.ws){ try{ this.ws.close(); }catch(e){} this.ws=null; }
+    if(this.ws){try{this.ws.close();}catch(e){} this.ws=null;}
   }
 
-  // ── WebSocket ───────────────────────────────────────────────────────────────
-  _connectWS(){
-    const proto = location.protocol==='https:' ? 'wss' : 'ws';
-    try {
-      this.ws = new WebSocket(`${proto}://${location.host}`);
-    } catch(e) {
-      this._wsConnectFailed('Could not connect to server');
-      return;
-    }
-
-    this.ws.onopen = () => {
-      if(this.roomAction === 'create'){
-        this.ws.send(JSON.stringify({ type:'create_room' }));
-      } else {
-        this.ws.send(JSON.stringify({ type:'join_room', code: this.roomCode }));
-      }
+  _attachWS(){
+    // WS is already open and connected — just hook up message/close handlers
+    this.ws.onmessage=(e)=>{
+      try{this._onMsg(JSON.parse(e.data));}catch(_){}
     };
-
-    this.ws.onerror = () => { /* onclose will fire right after */ };
-
-    this.ws.onclose = (ev) => {
+    this.ws.onclose=()=>{
       if(!this.running) return;
-      if(this.state === 'connecting' || this.state === 'waiting'){
-        // Failed before game started — go back to lobby with error
-        const reason = ev.code === 1006
-          ? 'Cannot connect to server. Is it running?'
-          : 'Connection lost before game started.';
-        this._wsConnectFailed(reason);
-      } else if(this.state !== 'game_over'){
-        this.msg   = {text:'DISCONNECTED', sub:'connection lost', color:'#ff6b6b', age:0};
-        this.state = 'game_over';
+      if(this.state!=='game_over'){
+        this.msg  ={text:'DISCONNECTED',sub:'connection lost',color:'#ff6b6b',age:0};
+        this.state='game_over';
       }
     };
-
-    this.ws.onmessage = (e) => {
-      try{ this._onMsg(JSON.parse(e.data)); }catch(_){}
-    };
-  }
-
-  _wsConnectFailed(reason){
-    // Stop the game loop and fire exit so main.js goes back to lobby
-    this.running = false;
-    if(this._raf){ cancelAnimationFrame(this._raf); this._raf=null; }
-    this.input.destroy();
-    if(this.ws){ try{this.ws.close();}catch(e){} this.ws=null; }
-    window.dispatchEvent(new CustomEvent('game:ws_error', { detail:{ msg: reason } }));
-    window.dispatchEvent(new CustomEvent('game:exit'));
+    this.ws.onerror=()=>{};
   }
 
   _onMsg(msg){
     switch(msg.type){
-      case 'assign':
-        this.myPid    = msg.pid;
-        this.roomCode = msg.code || '';
-        this.state    = 'waiting';
+      case 'state':
+        if(msg.p1) this.p1.applySnap(msg.p1);
+        if(msg.p2) this.p2.applySnap(msg.p2);
+        if(msg.state&&this.state!=='round_end'&&this.state!=='game_over') this.state=msg.state;
+        this.round=msg.round||this.round;
+        this.cdVal=msg.cdVal!=null?msg.cdVal:this.cdVal;
+        this.cdMs =msg.cdMs !=null?msg.cdMs :this.cdMs;
+        if(msg.p1) this.p1.score=msg.p1.score;
+        if(msg.p2) this.p2.score=msg.p2.score;
         break;
-
-      case 'waiting':
-        this.roomCode = msg.code || '';
-        this.state    = 'waiting';
-        break;
-
-      case 'error':
-        this._wsConnectFailed(msg.msg || 'Server error');
-        break;
-
-      case 'start':
-      case 'new_round':
-        this.round = msg.round || 1;
-        this.state = 'countdown';
-        this.msg   = null;
-        this.fx.clear();
-        break;
-
-      case 'kill': {
-        const atk = msg.atk===1 ? this.p1 : this.p2;
-        const def = msg.atk===1 ? this.p2 : this.p1;
+      case 'kill':{
+        const atk=msg.atk===1?this.p1:this.p2, def=msg.atk===1?this.p2:this.p1;
         this.slow.hit(); this.shake.hit(14);
-        this.fx.blood(def.x, def.y, atk.facingRight?1:-1);
+        this.fx.blood(def.x,def.y,atk.facingRight?1:-1);
         this.audio.playDeathImpact();
-        const name  = msg.atk===1?'KNIGHT':'THIEF';
-        const color = msg.atk===1?'#e63946':'#4ecdc4';
-        this.msg    = {text:`${name} WINS`, sub:`Round ${this.round}`, color, age:0};
-        this.state  = 'round_end';
+        this.msg={text:(msg.atk===1?'KNIGHT':'THIEF')+' WINS',sub:`Round ${this.round}`,color:msg.atk===1?'#e63946':'#4ecdc4',age:0};
+        this.state='round_end';
         break;
       }
-
-      case 'game_over': {
-        const s1=msg.scores[1], s2=msg.scores[2];
+      case 'new_round':
+        this.round=msg.round||1; this.state='countdown'; this.msg=null; this.fx.clear(); break;
+      case 'game_over':{
+        const s1=msg.scores[1],s2=msg.scores[2];
         let text,color;
         if(s1===s2){text='DRAW!';color='#fff';}
         else if(s1>s2){text='KNIGHT WINS!';color='#e63946';}
         else{text='THIEF WINS!';color='#4ecdc4';}
-        this.msg   = {text, sub:`${s1} — ${s2}   ·   press attack to continue`, color, age:0};
-        this.state = 'game_over';
-        break;
+        this.msg={text,sub:`${s1} — ${s2}   ·   press attack to continue`,color,age:0};
+        this.state='game_over'; break;
       }
-
-      case 'state':
-        if(msg.p1) this.p1.applySnap(msg.p1);
-        if(msg.p2) this.p2.applySnap(msg.p2);
-        if(msg.state && this.state!=='round_end' && this.state!=='game_over'){
-          this.state = msg.state;
-        }
-        this.round = msg.round || this.round;
-        this.cdVal = msg.cdVal != null ? msg.cdVal : this.cdVal;
-        this.cdMs  = msg.cdMs  != null ? msg.cdMs  : this.cdMs;
-        if(msg.p1) this.p1.score=msg.p1.score;
-        if(msg.p2) this.p2.score=msg.p2.score;
-        break;
-
       case 'opponent_left':
-        this.msg   = {text:'OPPONENT LEFT', sub:'returning to lobby…', color:'#ff6b6b', age:0};
-        this.state = 'game_over';
-        setTimeout(()=>this._exitToMenu(), 3000);
-        break;
+        this.msg={text:'OPPONENT LEFT',sub:'returning…',color:'#ff6b6b',age:0};
+        this.state='game_over';
+        setTimeout(()=>this._exit(),3000); break;
     }
   }
 
   _sendInput(){
-    if(!this.ws||this.ws.readyState!==1) return;
-    const inp = this.input.p1;  // both online players use WASD+J
-    const s   = JSON.stringify(inp);
-    if(s===this._lastSentInput) return;
-    this._lastSentInput = s;
-    this.ws.send(JSON.stringify({type:'input', input:inp}));
+    if(!this.ws||this.ws.readyState!==1)return;
+    const inp=this.input.p1;
+    const s=JSON.stringify(inp);
+    if(s===this._lastSentInput)return;
+    this._lastSentInput=s;
+    this.ws.send(JSON.stringify({type:'input',input:inp}));
   }
 
-  // ── main loop ────────────────────────────────────────────────────────────────
   _tick(now){
     if(!this.running)return;
     this._raf=requestAnimationFrame(this._tickFn);
-    const raw=Math.min(now-this._last,50);
-    this._last=now;
-    const mul=this.slow.tick(raw);
-    const dt=raw*mul;
+    const raw=Math.min(now-this._last,50); this._last=now;
+    const dt=raw*this.slow.tick(raw);
     this._update(dt,raw);
     this._render();
     this.input.flush();
@@ -378,25 +298,19 @@ export class Game {
 
   _update(dt,raw){
     this.shake.tick(); this.fx.update();
-
     if(this.mode==='online'){
       if(this.state==='playing'||this.state==='countdown') this._sendInput();
       this.p1.update(dt); this.p2.update(dt);
       if(this.msg) this.msg.age+=raw;
       if(this.state==='game_over'){
-        const i=this.input;
-        if(i.p1Pressed.attack||i.p1Pressed.jump) this._exitToMenu();
+        if(this.input.p1Pressed.attack||this.input.p1Pressed.jump) this._exit();
       }
       return;
     }
-
     // LOCAL / TUTORIAL
     if(this.state==='countdown'){
       this.cdMs+=raw;
-      while(this.cdMs>=1000){
-        this.cdMs-=1000; this.cdVal--;
-        if(this.cdVal<=0){this.state='playing';this.hitDone=false;this.cdVal=0;}
-      }
+      while(this.cdMs>=1000){this.cdMs-=1000;this.cdVal--;if(this.cdVal<=0){this.state='playing';this.hitDone=false;this.cdVal=0;}}
       this._localUpdatePlayers(dt,true); return;
     }
     if(this.state==='playing'){
@@ -407,49 +321,35 @@ export class Game {
       }
     }
     if(this.state==='round_end'){
-      this._localUpdatePlayers(dt,true);
-      this.roundMs+=raw; if(this.msg)this.msg.age+=raw;
-      if(this.roundMs>=ROUND_DELAY) this._localNextRound();
+      this._localUpdatePlayers(dt,true); this.roundMs+=raw; if(this.msg)this.msg.age+=raw;
+      if(this.roundMs>=ROUND_DELAY)this._localNextRound();
     }
     if(this.state==='game_over'){
       if(this.msg)this.msg.age+=raw;
       const i=this.input;
-      if(i.p1Pressed.attack||i.p1Pressed.jump||i.p2Pressed.attack||i.p2Pressed.jump)
-        this._exitToMenu();
+      if(i.p1Pressed.attack||i.p1Pressed.jump||i.p2Pressed.attack||i.p2Pressed.jump) this._exit();
     }
   }
 
   _localUpdatePlayers(dt,lock){
     const blank={left:false,right:false,jump:false,crouch:false,attack:false};
-    const in1=lock?blank:this.input.p1;
-    const in2=lock?blank:this.input.p2;
-    this._localPhysics(this.p1,dt,in1);
-    if(this.mode==='tutorial') this._aiUpdate(this.p2,dt);
-    else this._localPhysics(this.p2,dt,in2);
+    this._localPhysics(this.p1,dt,lock?blank:this.input.p1);
+    if(this.mode==='tutorial')this._aiUpdate(this.p2,dt);
+    else this._localPhysics(this.p2,dt,lock?blank:this.input.p2);
     this.p1.update(dt); this.p2.update(dt);
   }
 
   _localPhysics(p,dt,inp){
-    if(p.dead){
-      p.deadTimer+=dt; p.deadVy+=.48; p.deadVx*=.97;
-      p.deadX+=p.deadVx; p.deadY+=p.deadVy; p.deadAngle+=p.deadVx*.065;
-      if(p.deadY>=FLOOR_Y+4){p.deadY=FLOOR_Y+4;p.deadVy=0;p.deadVx*=.75;} return;
-    }
+    if(p.dead){p.deadTimer+=dt;p.deadVy+=.48;p.deadVx*=.97;p.deadX+=p.deadVx;p.deadY+=p.deadVy;p.deadAngle+=p.deadVx*.065;if(p.deadY>=FLOOR_Y+4){p.deadY=FLOOR_Y+4;p.deadVy=0;p.deadVx*=.75;}return;}
     if(!p.alive)return;
-    p.attackCd=Math.max(0,p.attackCd-dt);
-    p.vx=0;
-    if(inp.left){p.vx=-MOVE_SPEED;p.facingRight=false;}
-    if(inp.right){p.vx=MOVE_SPEED;p.facingRight=true;}
+    p.attackCd=Math.max(0,p.attackCd-dt); p.vx=0;
+    if(inp.left){p.vx=-MOVE_SPEED;p.facingRight=false;} if(inp.right){p.vx=MOVE_SPEED;p.facingRight=true;}
     p.crouching=!!(inp.crouch&&p.grounded); if(p.crouching)p.vx=0;
     if(inp.jump&&p.grounded){p.vy=JUMP_VEL;p.grounded=false;}
-    if(!p.grounded)p.vy+=GRAVITY;
-    p.x+=p.vx; p.y+=p.vy;
+    if(!p.grounded)p.vy+=GRAVITY; p.x+=p.vx; p.y+=p.vy;
     if(p.y>=FLOOR_Y){p.y=FLOOR_Y;p.vy=0;p.grounded=true;}else{p.grounded=false;}
     if(p.x<50)p.x=50; if(p.x>W-50)p.x=W-50;
-    if(inp.attack&&p.attackCd<=0&&!p.attacking){
-      p.attacking=true; p.attackCd=ATTACK_CD;
-      p.sprite.play('attack',true); this.audio.playSwordSwing(); this.audio.playAttackGrunt();
-    }
+    if(inp.attack&&p.attackCd<=0&&!p.attacking){p.attacking=true;p.attackCd=ATTACK_CD;p.sprite.play('attack',true);this.audio.playSwordSwing();this.audio.playAttackGrunt();}
     if(p.attacking&&p.sprite.done)p.attacking=false;
     p.sprite.flipX=!p.facingRight;
     if(p.attacking)p.sprite.play('attack');
@@ -463,8 +363,7 @@ export class Game {
     if(!p._aiMs)p._aiMs=0; if(!p._aiIn)p._aiIn={left:false,right:false,jump:false,attack:false,crouch:false};
     p._aiMs+=dt;
     if(p._aiMs>=420){
-      p._aiMs=0;
-      const opp=this.p1; const dx=opp.x-p.x, dist=Math.abs(dx);
+      p._aiMs=0; const dx=this.p1.x-p.x, dist=Math.abs(dx);
       p._aiIn={left:false,right:false,jump:false,attack:false,crouch:false};
       if(dist>140){dx>0?(p._aiIn.right=true):(p._aiIn.left=true);}
       else if(dist>60){if(Math.random()<.4)p._aiIn.attack=true;}
@@ -476,23 +375,17 @@ export class Game {
 
   _localHit(atk,def){
     if(!atk.attacking||!atk.alive||!def.alive)return false;
-    const dir=atk.facingRight?1:-1;
-    const tipX=atk.x+dir*48*SCALE*.42, tipY=atk.y-10+(atk.crouching?14:0);
+    const dir=atk.facingRight?1:-1, tipX=atk.x+dir*48*SCALE*.42, tipY=atk.y-10+(atk.crouching?14:0);
     return tipX>=def.x-26&&tipX<=def.x+26&&tipY>=def.y-30&&tipY<=def.y+30;
   }
 
   _localKill(atk,def){
     const dir=atk.facingRight?1:-1;
-    this.slow.hit(); this.shake.hit(14);
-    this.fx.blood(def.x,def.y,dir);
-    def.dead=true; def.alive=false; def.deadX=def.x; def.deadY=def.y;
-    def.deadVx=dir*6+def.vx*.15; def.deadVy=-6; def.deadAngle=0; def.deadTimer=0;
-    def.sprite.play('death',true);
-    this.audio.playDeathImpact();
-    atk.score++;
-    const name=atk.id===1?'KNIGHT':'THIEF';
-    const color=atk.id===1?'#e63946':'#4ecdc4';
-    this.msg={text:`${name} WINS`,sub:`Round ${this.round}`,color,age:0};
+    this.slow.hit(); this.shake.hit(14); this.fx.blood(def.x,def.y,dir);
+    def.dead=true;def.alive=false;def.deadX=def.x;def.deadY=def.y;
+    def.deadVx=dir*6+def.vx*.15;def.deadVy=-6;def.deadAngle=0;def.deadTimer=0;
+    def.sprite.play('death',true); this.audio.playDeathImpact(); atk.score++;
+    this.msg={text:(atk.id===1?'KNIGHT':'THIEF')+' WINS',sub:`Round ${this.round}`,color:atk.id===1?'#e63946':'#4ecdc4',age:0};
     this.state='round_end'; this.roundMs=0;
     if(this.mode==='tutorial')this.tutPhase=Math.min(this.tutPhase+1,2);
   }
@@ -501,44 +394,28 @@ export class Game {
     const s1=this.p1.score,s2=this.p2.score;
     if(s1>=MAJORITY||s2>=MAJORITY||this.round>=MAX_ROUNDS){
       let text,color;
-      if(s1===s2){text='DRAW!';color='#fff';}
-      else if(s1>s2){text='KNIGHT WINS!';color='#e63946';}
-      else{text='THIEF WINS!';color='#4ecdc4';}
+      if(s1===s2){text='DRAW!';color='#fff';}else if(s1>s2){text='KNIGHT WINS!';color='#e63946';}else{text='THIEF WINS!';color='#4ecdc4';}
       this.msg={text,sub:`${s1} — ${s2}   ·   press attack to continue`,color,age:0};
       this.state='game_over'; return;
     }
-    this.round++; this.fx.clear(); this.msg=null;
-    this.roundMs=0; this.cdVal=3; this.cdMs=0; this.hitDone=false;
+    this.round++;this.fx.clear();this.msg=null;this.roundMs=0;this.cdVal=3;this.cdMs=0;this.hitDone=false;
     this._spawn(s1,s2); this.state='countdown';
   }
 
-  _exitToMenu(){
-    this.stop();
-    window.dispatchEvent(new CustomEvent('game:exit'));
-  }
+  _exit(){ this.stop(); window.dispatchEvent(new CustomEvent('game:exit')); }
 
-  // ── render ──────────────────────────────────────────────────────────────────
   _render(){
     const ctx=this.ctx,w=W,h=H;
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,w,h);
+    // subtle floor line
+    ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,FLOOR_Y); ctx.lineTo(w,FLOOR_Y); ctx.stroke();
 
-    // Pure black background — no images, no cave, no tiles
-    ctx.fillStyle='#000';
-    ctx.fillRect(0,0,w,h);
-
-    // Thin floor line for visual reference
-    ctx.strokeStyle='rgba(255,255,255,0.12)';
-    ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(0,FLOOR_Y+1); ctx.lineTo(w,FLOOR_Y+1); ctx.stroke();
-
-    // Screen shake
     const off=this.shake.off();
     ctx.save(); ctx.translate(off.x,off.y);
-    this.fx.draw(ctx);
-    this.p1.draw(ctx);
-    this.p2.draw(ctx);
+    this.fx.draw(ctx); this.p1.draw(ctx); this.p2.draw(ctx);
     ctx.restore();
 
-    // Slow-mo vignette
     if(this.slow.on){
       const t=1-this.slow.m;
       const g=ctx.createRadialGradient(w/2,h/2,h*.28,w/2,h/2,h*.88);
@@ -546,63 +423,26 @@ export class Game {
       ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
     }
 
-    // CONNECTING screen
-    if(this.state==='connecting'){
-      ctx.save(); ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
-      ctx.font='bold 24px "Courier New"';
-      const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
-      ctx.fillText('Connecting'+dots,w/2,h/2);
-      ctx.restore(); return;
-    }
-
-    // WAITING screen (host waits for opponent)
     if(this.state==='waiting'){
-      ctx.save(); ctx.textAlign='center';
-      ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=14;
-      ctx.font='bold 28px "Courier New"';
-      if(this.myPid===1){
-        ctx.fillText('ROOM CREATED',w/2,h/2-70);
-        ctx.shadowBlur=0;
-        ctx.font='bold 14px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.7)';
-        ctx.fillText('Share this code with your opponent:',w/2,h/2-32);
-        // Code box
-        ctx.fillStyle='rgba(78,205,196,0.1)';
-        ctx.fillRect(w/2-110,h/2-18,220,64);
-        ctx.strokeStyle='#4ecdc4'; ctx.lineWidth=1.5;
-        ctx.strokeRect(w/2-110,h/2-18,220,64);
-        ctx.font='bold 54px "Courier New"'; ctx.fillStyle='#fff';
-        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=20;
-        ctx.fillText(this.roomCode||'…',w/2,h/2+38);
-        ctx.shadowBlur=0;
-        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
-        ctx.font='13px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.4)';
-        ctx.fillText('Waiting for opponent'+dots,w/2,h/2+74);
-      } else {
-        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
-        ctx.fillText('JOINING ROOM '+this.roomCode,w/2,h/2-20);
-        ctx.shadowBlur=0; ctx.font='14px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.45)';
-        ctx.fillText('Connected'+dots,w/2,h/2+16);
-      }
+      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,w,h);
+      ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
+      ctx.font='bold 24px "Courier New"';
+      ctx.fillText('Connected — waiting for match to start…',w/2,h/2);
       ctx.restore(); return;
     }
 
-    // Countdown
     if(this.state==='countdown'||(this.state==='playing'&&this.cdVal===0&&this.cdMs<700)){
       const label=this.cdVal>0?String(this.cdVal):'FIGHT!';
       const fadeAlpha=this.state==='playing'?Math.max(0,1-this.cdMs/500):1;
       ctx.save(); ctx.globalAlpha=fadeAlpha; ctx.textAlign='center';
       ctx.font='bold 90px "Courier New"';
-      ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=11;
-      ctx.strokeText(label,w/2,h/2+22);
-      ctx.fillStyle='#fff'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=28;
-      ctx.fillText(label,w/2,h/2+22);
+      ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=11; ctx.strokeText(label,w/2,h/2+22);
+      ctx.fillStyle='#fff'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=28; ctx.fillText(label,w/2,h/2+22);
       ctx.restore();
     }
 
-    // HUD
     drawHUD(ctx,this.p1,this.p2,w,h,this.round,MAX_ROUNDS,this.state,this.msg,this.myPid);
 
-    // Tutorial hints
     if(this.mode==='tutorial'){
       const lines=['A/D Move  W Jump  S Crouch  J Attack','Get close and thrust — one hit kills!','Watch spacing. The first strike wins.'];
       ctx.save(); ctx.globalAlpha=.82;
@@ -612,7 +452,6 @@ export class Game {
       ctx.restore();
     }
 
-    // Game-over dim
     if(this.state==='game_over'){
       ctx.fillStyle='rgba(0,0,0,0.38)'; ctx.fillRect(0,0,w,h);
     }
