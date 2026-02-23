@@ -102,15 +102,21 @@ class SPlayer {
     if (this.x > W - 50) this.x = W - 50;
 
     if (input.attack && this.attackCd <= 0 && !this.attacking) {
-      this.attacking = true;
-      this.attackCd  = ATTACK_CD;
+      this.attacking   = true;
+      this.attackTimer = 0;
+      this.attackCd    = ATTACK_CD;
+    }
+    // Auto-clear attacking after animation duration (~460ms covers both knight and thief)
+    if (this.attacking) {
+      this.attackTimer = (this.attackTimer || 0) + dt;
+      if (this.attackTimer >= 460) { this.attacking = false; this.attackTimer = 0; }
     }
 
-    if (this.attacking)       this.anim = 'attack';
-    else if (this.crouching)  this.anim = 'crouch';
-    else if (!this.grounded)  this.anim = 'jump';
+    if (this.attacking)                this.anim = 'attack';
+    else if (this.crouching)           this.anim = 'crouch';
+    else if (!this.grounded)           this.anim = 'jump';
     else if (Math.abs(this.vx) > 0.1) this.anim = 'run';
-    else                      this.anim = 'idle';
+    else                               this.anim = 'idle';
   }
 
   snapshot() {
@@ -155,7 +161,16 @@ class Room {
     this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
     this._broadcast({ type: 'start', round: this.round });
     this._lastTick = Date.now();
-    this._timer = setInterval(() => this._tick(), TICK_MS);
+    // Use self-correcting setTimeout for tighter timing than setInterval
+    const tick = () => {
+      if (!this._running) return;
+      this._tick();
+      const drift = Date.now() - this._lastTick;
+      const delay = Math.max(0, TICK_MS - drift % TICK_MS);
+      this._timer = setTimeout(tick, delay);
+    };
+    this._running = true;
+    this._timer = setTimeout(tick, TICK_MS);
   }
 
   _respawn() {
@@ -217,7 +232,6 @@ class Room {
     this.hitDone  = true;
     this.state    = 'round_end';
     this.roundMs  = 0;
-    setTimeout(() => { atk.attacking = false; }, 400);
     this._broadcast({ type: 'kill', atk: atk.id, def: def.id, scores: { 1: this.p1.score, 2: this.p2.score } });
   }
 
@@ -251,7 +265,8 @@ class Room {
   }
 
   stop() {
-    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    this._running = false;
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
   }
 
   removeClient(ws) {

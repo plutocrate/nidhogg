@@ -76,13 +76,29 @@ class Player {
     this.attacking=false; this.attackCd=0; this.crouching=false; this.score=0; this.anim='idle';
   }
   applySnap(s){
-    this.x=s.x; this.y=s.y; this.vx=s.vx; this.vy=s.vy;
+    // Always hard-sync game-state fields
     this.grounded=s.grounded; this.facingRight=s.facingRight;
     this.alive=s.alive; this.dead=s.dead;
-    this.deadX=s.deadX; this.deadY=s.deadY; this.deadAngle=s.deadAngle; this.deadTimer=s.deadTimer;
-    this.attacking=s.attacking; this.crouching=s.crouching; this.anim=s.anim; this.score=s.score;
+    this.attacking=s.attacking; this.crouching=s.crouching;
+    this.anim=s.anim; this.score=s.score;
+    this.vx=s.vx; this.vy=s.vy;
     this.sprite.flipX=!s.facingRight;
     if(this.sprite.anim!==s.anim) this.sprite.play(s.anim);
+
+    if(this.dead){
+      // Hard-sync dead body physics
+      this.deadX=s.deadX; this.deadY=s.deadY;
+      this.deadAngle=s.deadAngle; this.deadTimer=s.deadTimer;
+    } else if(this.alive){
+      // Smooth lerp toward server position — eliminates jitter without adding lag
+      const dx=s.x-this.x, dy=s.y-this.y;
+      if(Math.abs(dx)>80||Math.abs(dy)>80){
+        // Large desync: hard snap
+        this.x=s.x; this.y=s.y;
+      } else {
+        this.x+=dx*0.35; this.y+=dy*0.35;
+      }
+    }
   }
   update(dt){ this.sprite.update(dt); }
   draw(ctx){
@@ -151,7 +167,7 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
     ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1; ctx.strokeRect(px,ry,PW,PH);
   }
   ctx.restore();
-  if(msg&&msg.text){
+  if(msg&&msg.text && state!=='countdown' && state!=='playing'){
     const age=msg.age||0; let alpha=Math.min(1,age/110);
     if(state==='game_over'&&age>1200) alpha=Math.max(0,1-(age-1200)/800);
     ctx.save(); ctx.globalAlpha=alpha; ctx.textAlign='center';
@@ -243,13 +259,15 @@ export class Game {
       case 'state':
         if(msg.p1) this.p1.applySnap(msg.p1);
         if(msg.p2) this.p2.applySnap(msg.p2);
-        if(msg.state&&this.state!=='round_end'&&this.state!=='game_over') this.state=msg.state;
+        // Only sync state if we're not in a terminal/transitioning state
+        if(msg.state && this.state!=='round_end' && this.state!=='game_over') this.state=msg.state;
         this.round=msg.round||this.round;
         this.cdVal=msg.cdVal!=null?msg.cdVal:this.cdVal;
         this.cdMs =msg.cdMs !=null?msg.cdMs :this.cdMs;
         if(msg.p1) this.p1.score=msg.p1.score;
         if(msg.p2) this.p2.score=msg.p2.score;
         break;
+
       case 'kill':{
         const atk=msg.atk===1?this.p1:this.p2, def=msg.atk===1?this.p2:this.p1;
         this.slow.hit(); this.shake.hit(14);
@@ -259,21 +277,42 @@ export class Game {
         this.state='round_end';
         break;
       }
+
       case 'new_round':
-        this.round=msg.round||1; this.state='countdown'; this.msg=null; this.fx.clear(); break;
+        // Hard-reset both players and all visual state for the new round
+        this.round = msg.round || this.round;
+        this.fx.clear();
+        this.shake = new Shake();
+        this.slow  = new SlowMo();
+        // Reset players to fresh state, keep scores
+        const s1=this.p1.score, s2=this.p2.score;
+        this.p1=new Player(1,W*0.28,'knight'); this.p1.score=s1;
+        this.p2=new Player(2,W*0.72,'thief');  this.p2.score=s2;
+        this.p1.facingRight=true;  this.p1.sprite.flipX=false;
+        this.p2.facingRight=false; this.p2.sprite.flipX=true;
+        this.msg   = null;
+        this.cdVal = 3; this.cdMs = 0;
+        this.state = 'countdown';
+        break;
+
       case 'game_over':{
-        const s1=msg.scores[1],s2=msg.scores[2];
+        const gs1=msg.scores[1], gs2=msg.scores[2];
         let text,color;
-        if(s1===s2){text='DRAW!';color='#fff';}
-        else if(s1>s2){text='KNIGHT WINS!';color='#e63946';}
+        if(gs1===gs2){text='DRAW!';color='#fff';}
+        else if(gs1>gs2){text='KNIGHT WINS!';color='#e63946';}
         else{text='THIEF WINS!';color='#4ecdc4';}
-        this.msg={text,sub:`${s1} — ${s2}   ·   press attack to continue`,color,age:0};
-        this.state='game_over'; break;
-      }
-      case 'opponent_left':
-        this.msg={text:'OPPONENT LEFT',sub:'returning…',color:'#ff6b6b',age:0};
+        this.msg={text,sub:`${gs1} — ${gs2}`,color,age:0};
         this.state='game_over';
-        setTimeout(()=>this._exit(),3000); break;
+        // Auto-return to menu after 4 seconds
+        setTimeout(()=>{ if(this.running) this._exit(); }, 4000);
+        break;
+      }
+
+      case 'opponent_left':
+        this.msg={text:'OPPONENT LEFT',sub:'returning to menu…',color:'#ff6b6b',age:0};
+        this.state='game_over';
+        setTimeout(()=>{ if(this.running) this._exit(); }, 3000);
+        break;
     }
   }
 
@@ -302,9 +341,8 @@ export class Game {
       if(this.state==='playing'||this.state==='countdown') this._sendInput();
       this.p1.update(dt); this.p2.update(dt);
       if(this.msg) this.msg.age+=raw;
-      if(this.state==='game_over'){
-        if(this.input.p1Pressed.attack||this.input.p1Pressed.jump) this._exit();
-      }
+      // Clear round-win message once it's been shown long enough (before new_round arrives)
+      if(this.state==='round_end' && this.msg && this.msg.age > 2400) this.msg=null;
       return;
     }
     // LOCAL / TUTORIAL
@@ -326,8 +364,6 @@ export class Game {
     }
     if(this.state==='game_over'){
       if(this.msg)this.msg.age+=raw;
-      const i=this.input;
-      if(i.p1Pressed.attack||i.p1Pressed.jump||i.p2Pressed.attack||i.p2Pressed.jump) this._exit();
     }
   }
 
@@ -395,10 +431,17 @@ export class Game {
     if(s1>=MAJORITY||s2>=MAJORITY||this.round>=MAX_ROUNDS){
       let text,color;
       if(s1===s2){text='DRAW!';color='#fff';}else if(s1>s2){text='KNIGHT WINS!';color='#e63946';}else{text='THIEF WINS!';color='#4ecdc4';}
-      this.msg={text,sub:`${s1} — ${s2}   ·   press attack to continue`,color,age:0};
-      this.state='game_over'; return;
+      this.msg={text,sub:`${s1} — ${s2}`,color,age:0};
+      this.state='game_over';
+      setTimeout(()=>{ if(this.running) this._exit(); }, 4000);
+      return;
     }
-    this.round++;this.fx.clear();this.msg=null;this.roundMs=0;this.cdVal=3;this.cdMs=0;this.hitDone=false;
+    this.round++;
+    // Full reset of all visual state
+    this.fx.clear();
+    this.shake = new Shake();
+    this.slow  = new SlowMo();
+    this.msg=null; this.roundMs=0; this.cdVal=3; this.cdMs=0; this.hitDone=false;
     this._spawn(s1,s2); this.state='countdown';
   }
 
@@ -406,16 +449,33 @@ export class Game {
 
   _render(){
     const ctx=this.ctx,w=W,h=H;
-    ctx.fillStyle='#000'; ctx.fillRect(0,0,w,h);
-    // subtle floor line
+
+    // Full black clear every frame — nothing persists
+    ctx.fillStyle='#000';
+    ctx.fillRect(0,0,w,h);
+
+    // Floor line
     ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(0,FLOOR_Y); ctx.lineTo(w,FLOOR_Y); ctx.stroke();
 
+    // Waiting screen — don't draw game objects
+    if(this.state==='waiting'){
+      ctx.save(); ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
+      ctx.font='bold 24px "Courier New"';
+      ctx.fillText('Connected — waiting for match to start…',w/2,h/2);
+      ctx.restore();
+      return;
+    }
+
+    // Draw game objects with screen shake
     const off=this.shake.off();
     ctx.save(); ctx.translate(off.x,off.y);
-    this.fx.draw(ctx); this.p1.draw(ctx); this.p2.draw(ctx);
+    this.fx.draw(ctx);
+    this.p1.draw(ctx);
+    this.p2.draw(ctx);
     ctx.restore();
 
+    // Slow-mo vignette
     if(this.slow.on){
       const t=1-this.slow.m;
       const g=ctx.createRadialGradient(w/2,h/2,h*.28,w/2,h/2,h*.88);
@@ -423,14 +483,7 @@ export class Game {
       ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
     }
 
-    if(this.state==='waiting'){
-      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,w,h);
-      ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
-      ctx.font='bold 24px "Courier New"';
-      ctx.fillText('Connected — waiting for match to start…',w/2,h/2);
-      ctx.restore(); return;
-    }
-
+    // Countdown
     if(this.state==='countdown'||(this.state==='playing'&&this.cdVal===0&&this.cdMs<700)){
       const label=this.cdVal>0?String(this.cdVal):'FIGHT!';
       const fadeAlpha=this.state==='playing'?Math.max(0,1-this.cdMs/500):1;
@@ -441,8 +494,10 @@ export class Game {
       ctx.restore();
     }
 
+    // HUD (scores, round counter, win message)
     drawHUD(ctx,this.p1,this.p2,w,h,this.round,MAX_ROUNDS,this.state,this.msg,this.myPid);
 
+    // Tutorial hints
     if(this.mode==='tutorial'){
       const lines=['A/D Move  W Jump  S Crouch  J Attack','Get close and thrust — one hit kills!','Watch spacing. The first strike wins.'];
       ctx.save(); ctx.globalAlpha=.82;
@@ -452,8 +507,24 @@ export class Game {
       ctx.restore();
     }
 
+    // Game-over: dark overlay + final message already drawn by HUD
     if(this.state==='game_over'){
-      ctx.fillStyle='rgba(0,0,0,0.38)'; ctx.fillRect(0,0,w,h);
+      ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,w,h);
+      // Re-draw the final message on top of the overlay
+      if(this.msg&&this.msg.text){
+        ctx.save(); ctx.textAlign='center';
+        ctx.font='bold 60px "Courier New"';
+        ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=10; ctx.strokeText(this.msg.text,w/2,h/2-14);
+        ctx.fillStyle=this.msg.color||'#fff'; ctx.shadowColor=this.msg.color||'#fff'; ctx.shadowBlur=24;
+        ctx.fillText(this.msg.text,w/2,h/2-14);
+        if(this.msg.sub){
+          ctx.font='bold 19px "Courier New"'; ctx.shadowBlur=0;
+          ctx.fillStyle='rgba(230,230,230,0.92)'; ctx.fillText(this.msg.sub,w/2,h/2+24);
+        }
+        ctx.fillStyle='rgba(180,180,180,0.5)'; ctx.font='13px "Courier New"';
+        ctx.fillText('returning to menu…',w/2,h/2+58);
+        ctx.restore();
+      }
     }
   }
 }
