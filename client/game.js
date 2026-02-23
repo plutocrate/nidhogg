@@ -150,12 +150,14 @@ class SlowMo {
 
 function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
   ctx.save();
+  ctx.shadowBlur=0; ctx.shadowColor='transparent';
   ctx.font='bold 13px "Courier New"'; ctx.textAlign='left';
   ctx.fillStyle='#e63946'; ctx.shadowColor='#e63946'; ctx.shadowBlur=7;
   ctx.fillText('KNIGHT'+(myPid===1?' ◀':''),20,22);
-  ctx.textAlign='right'; ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4';
+  ctx.shadowBlur=0; ctx.shadowColor='transparent';
+  ctx.textAlign='right'; ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=7;
   ctx.fillText((myPid===2?'▶ ':'')+' THIEF',w-20,22);
-  ctx.shadowBlur=0;
+  ctx.shadowBlur=0; ctx.shadowColor='transparent';
   ctx.textAlign='center'; ctx.font='bold 12px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.48)';
   ctx.fillText(`ROUND  ${round} / ${maxR}`,w/2,16);
   const PW=14,PH=10,PG=5,rowW=maxR*(PW+PG)-PG, rx=w/2-rowW/2, ry=22;
@@ -166,21 +168,25 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
     else if(i<p2.score){ctx.fillStyle='#4ecdc4';ctx.fillRect(px,ry,PW,PH);}
     ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1; ctx.strokeRect(px,ry,PW,PH);
   }
-  ctx.restore();
+  // Round-win message (not during active play)
   if(msg&&msg.text && state!=='countdown' && state!=='playing'){
     const age=msg.age||0; let alpha=Math.min(1,age/110);
-    if(state==='game_over'&&age>1200) alpha=Math.max(0,1-(age-1200)/800);
-    ctx.save(); ctx.globalAlpha=alpha; ctx.textAlign='center';
+    ctx.globalAlpha=alpha; ctx.textAlign='center';
     ctx.font='bold 60px "Courier New"';
-    ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=10; ctx.strokeText(msg.text,w/2,h/2-14);
-    ctx.fillStyle=msg.color||'#fff'; ctx.shadowColor=msg.color||'#fff'; ctx.shadowBlur=24;
+    ctx.shadowBlur=0;
+    ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=10;
+    ctx.strokeText(msg.text,w/2,h/2-14);
+    ctx.shadowColor=msg.color||'#fff'; ctx.shadowBlur=24;
+    ctx.fillStyle=msg.color||'#fff';
     ctx.fillText(msg.text,w/2,h/2-14);
+    ctx.shadowBlur=0; ctx.shadowColor='transparent';
     if(msg.sub){
-      ctx.font='bold 19px "Courier New"'; ctx.shadowBlur=0;
-      ctx.fillStyle='rgba(230,230,230,0.92)'; ctx.fillText(msg.sub,w/2,h/2+24);
+      ctx.font='bold 19px "Courier New"';
+      ctx.fillStyle='rgba(230,230,230,0.92)';
+      ctx.fillText(msg.sub,w/2,h/2+24);
     }
-    ctx.restore();
   }
+  ctx.restore();
 }
 
 export class Game {
@@ -450,26 +456,31 @@ export class Game {
   _render(){
     const ctx=this.ctx,w=W,h=H;
 
-    // Full black clear every frame — nothing persists
+    // Reset ALL canvas state before clearing — shadowBlur especially bleeds through fillRect
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+    ctx.shadowBlur=0; ctx.shadowColor='transparent';
+    ctx.clearRect(0,0,w,h);
     ctx.fillStyle='#000';
     ctx.fillRect(0,0,w,h);
 
     // Floor line
-    ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;
+    ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(0,FLOOR_Y); ctx.lineTo(w,FLOOR_Y); ctx.stroke();
 
-    // Waiting screen — don't draw game objects
+    // Waiting screen
     if(this.state==='waiting'){
-      ctx.save(); ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
+      ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
       ctx.font='bold 24px "Courier New"';
       ctx.fillText('Connected — waiting for match to start…',w/2,h/2);
-      ctx.restore();
       return;
     }
 
     // Draw game objects with screen shake
     const off=this.shake.off();
-    ctx.save(); ctx.translate(off.x,off.y);
+    ctx.save();
+    ctx.translate(off.x,off.y);
     this.fx.draw(ctx);
     this.p1.draw(ctx);
     this.p2.draw(ctx);
@@ -486,45 +497,55 @@ export class Game {
     // Countdown
     if(this.state==='countdown'||(this.state==='playing'&&this.cdVal===0&&this.cdMs<700)){
       const label=this.cdVal>0?String(this.cdVal):'FIGHT!';
-      const fadeAlpha=this.state==='playing'?Math.max(0,1-this.cdMs/500):1;
-      ctx.save(); ctx.globalAlpha=fadeAlpha; ctx.textAlign='center';
+      const fade=this.state==='playing'?Math.max(0,1-this.cdMs/500):1;
+      ctx.save();
+      ctx.globalAlpha=fade; ctx.textAlign='center';
       ctx.font='bold 90px "Courier New"';
-      ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=11; ctx.strokeText(label,w/2,h/2+22);
-      ctx.fillStyle='#fff'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=28; ctx.fillText(label,w/2,h/2+22);
+      ctx.shadowBlur=0;
+      ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=11;
+      ctx.strokeText(label,w/2,h/2+22);
+      ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=28;
+      ctx.fillStyle='#fff'; ctx.fillText(label,w/2,h/2+22);
       ctx.restore();
     }
 
-    // HUD (scores, round counter, win message)
+    // HUD
     drawHUD(ctx,this.p1,this.p2,w,h,this.round,MAX_ROUNDS,this.state,this.msg,this.myPid);
 
     // Tutorial hints
     if(this.mode==='tutorial'){
       const lines=['A/D Move  W Jump  S Crouch  J Attack','Get close and thrust — one hit kills!','Watch spacing. The first strike wins.'];
       ctx.save(); ctx.globalAlpha=.82;
+      ctx.shadowBlur=0;
       ctx.fillStyle='rgba(0,0,0,0.62)'; ctx.fillRect(w/2-290,h-54,580,36);
       ctx.fillStyle='#4ecdc4'; ctx.font='bold 13px "Courier New"'; ctx.textAlign='center';
       ctx.fillText(lines[Math.min(this.tutPhase,lines.length-1)],w/2,h-30);
       ctx.restore();
     }
 
-    // Game-over: dark overlay + final message already drawn by HUD
+    // Game-over overlay
     if(this.state==='game_over'){
-      ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,w,h);
-      // Re-draw the final message on top of the overlay
+      ctx.save();
+      ctx.shadowBlur=0;
+      ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,w,h);
       if(this.msg&&this.msg.text){
-        ctx.save(); ctx.textAlign='center';
+        ctx.textAlign='center';
         ctx.font='bold 60px "Courier New"';
-        ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=10; ctx.strokeText(this.msg.text,w/2,h/2-14);
-        ctx.fillStyle=this.msg.color||'#fff'; ctx.shadowColor=this.msg.color||'#fff'; ctx.shadowBlur=24;
+        ctx.strokeStyle='rgba(0,0,0,0.95)'; ctx.lineWidth=12;
+        ctx.strokeText(this.msg.text,w/2,h/2-14);
+        ctx.shadowColor=this.msg.color||'#fff'; ctx.shadowBlur=24;
+        ctx.fillStyle=this.msg.color||'#fff';
         ctx.fillText(this.msg.text,w/2,h/2-14);
+        ctx.shadowBlur=0;
         if(this.msg.sub){
-          ctx.font='bold 19px "Courier New"'; ctx.shadowBlur=0;
-          ctx.fillStyle='rgba(230,230,230,0.92)'; ctx.fillText(this.msg.sub,w/2,h/2+24);
+          ctx.font='bold 19px "Courier New"';
+          ctx.fillStyle='rgba(230,230,230,0.92)';
+          ctx.fillText(this.msg.sub,w/2,h/2+24);
         }
-        ctx.fillStyle='rgba(180,180,180,0.5)'; ctx.font='13px "Courier New"';
+        ctx.fillStyle='rgba(150,150,150,0.6)'; ctx.font='13px "Courier New"';
         ctx.fillText('returning to menu…',w/2,h/2+58);
-        ctx.restore();
       }
+      ctx.restore();
     }
   }
 }
