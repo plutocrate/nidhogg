@@ -256,9 +256,12 @@ class Room {
 
   removeClient(ws) {
     this.clients = this.clients.filter(c => c.ws !== ws);
+    // Only notify remaining clients (not the one that just left)
+    if (this.clients.length > 0) {
+      this._broadcast({ type: 'opponent_left' });
+    }
     if (this.clients.length < 2) {
       this.stop();
-      this._broadcast({ type: 'opponent_left' });
     }
   }
 }
@@ -277,6 +280,13 @@ function genCode() {
 // ─── WEBSOCKET + ROOM MANAGEMENT ────────────────────────────────────────────
 const wss   = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 const rooms = new Map();
+
+// Keep-alive ping every 25s — prevents Railway/nginx from killing idle WS connections
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.readyState === 1) ws.ping();
+  }
+}, 25_000);
 
 // Cleanup empty rooms every 5 min
 setInterval(() => {

@@ -397,15 +397,28 @@ export class Game {
         this.ws.send(JSON.stringify({ type:'join_room', code: roomCode }));
       }
     };
+    this.ws.onerror = () => {
+      // onerror always fires before onclose — just log, onclose handles the UI
+      console.warn('[WS] connection error');
+    };
     this.ws.onmessage = (e) => {
       try{ this._onMsg(JSON.parse(e.data)); }catch(_){}
     };
     this.ws.onclose = () => {
-      if(this.running && this.state !== 'game_over'){
+      if(!this.running) return;
+      // If we close while actively playing/in countdown, show disconnected
+      if(this.state === 'playing' || this.state === 'countdown' || this.state === 'round_end'){
         this.msg   = {text:'DISCONNECTED', sub:'opponent left or connection lost', color:'#ff6b6b', age:0};
         this.state = 'game_over';
+      } else if(this.state === 'waiting'){
+        // Connection dropped while waiting — show reconnect option
+        this._wsError = 'Connection lost. Check your internet and try again.';
+        window.dispatchEvent(new CustomEvent('game:ws_error', { detail: { msg: this._wsError } }));
+        this._exitToMenu();
       }
     };
+    // Handle pong (keep-alive response) — no-op, just prevents errors
+    this.ws.addEventListener('message', () => {}); // pong handled by ws lib
   }
 
   _onMsg(msg){
