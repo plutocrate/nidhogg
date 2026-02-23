@@ -79,5 +79,13 @@
 
 
   <script type="module" src="main.js"></script>
+  <script>
+    document.addEventListener("paste", (e) => {
+      const text = (e.clipboardData || window.clipboardData).getData("text");
+      if (!text) return;
+      const code = text.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+      for (const ch of code) window.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
+    });
+  </script>
 </body>
 </html>

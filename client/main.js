@@ -82,8 +82,18 @@ class Menu {
   }
 
   _launch(mode){
+    if(mode === 'online'){
+      // Show room lobby before destroying menu
+      this._showOnlineLobby();
+      return;
+    }
     this._destroy(); canvas.style.cursor='default';
     startGame(mode);
+  }
+
+  _showOnlineLobby(){
+    this._destroy(); canvas.style.cursor='default';
+    showOnlineLobby();
   }
 
   _frame(now){
@@ -179,7 +189,7 @@ class Menu {
     const rows2=[['← →','Move'],['↑','Jump'],['↓','Crouch'],['Num0 / /','Attack'],['ESC','Back to menu']];
     ctx.textAlign='left'; ctx.fillStyle='#e63946'; ctx.font='bold 15px "Courier New"';
     ctx.fillText('PLAYER 1 — KNIGHT',c1,by+82);
-    ctx.fillStyle='#4ecdc4'; ctx.fillText('PLAYER 2 — THIEF',c2,by+82);
+    ctx.fillStyle='#4ecdc4'; ctx.fillText('ONLINE P2 / LOCAL P2',c2,by+82);
     rows.forEach(([k,d],i)=>{
       ctx.fillStyle='#777'; ctx.font='13px "Courier New"'; ctx.fillText(`[ ${k} ]`,c1,by+108+i*28);
       ctx.fillStyle='#ddd'; ctx.fillText(d,c1+110,by+108+i*28);
@@ -191,14 +201,181 @@ class Menu {
     ctx.textAlign='center'; ctx.fillStyle='rgba(78,205,196,0.7)';
     ctx.font='bold 13px "Courier New"'; ctx.fillText('ONE HIT KILLS — TIMING IS EVERYTHING',W/2,by+270);
     ctx.fillStyle='rgba(100,140,130,0.5)'; ctx.font='11px "Courier New"';
-    ctx.fillText('ONLINE: open this page in two browsers / tabs / share the URL',W/2,by+300);
+    ctx.fillText('ONLINE: both players use WASD+J on their own machine',W/2,by+300);
     ctx.fillText('CLICK or PRESS ENTER to return',W/2,by+325);
     ctx.restore();
   }
 }
 
+// ── online lobby ─────────────────────────────────────────────────────────────
+function showOnlineLobby(){
+  const ctx = canvas.getContext('2d');
+  let hover = -1; // 0=create, 1=join
+  let joinCode = '';
+  let errorMsg = '';
+  let alive = true;
+
+  const rects = []; // button rects
+
+  function destroy(){
+    alive = false;
+    canvas.removeEventListener('click', onClick);
+    canvas.removeEventListener('mousemove', onMove);
+    window.removeEventListener('keydown', onKey);
+    canvas.style.cursor = 'default';
+  }
+
+  function canvasXY(e){
+    const r=canvas.getBoundingClientRect();
+    return {x:(e.clientX-r.left)*(W/r.width), y:(e.clientY-r.top)*(H/r.height)};
+  }
+
+  function onKey(e){
+    if(e.code === 'Escape'){ destroy(); new Menu(); return; }
+    if(e.code === 'Backspace'){ joinCode = joinCode.slice(0,-1); errorMsg=''; return; }
+    if(e.code === 'Enter'){
+      if(joinCode.length === 4){ launchJoin(); return; }
+    }
+    // Allow typing letters/numbers for code (only when not creating)
+    const ch = e.key.toUpperCase();
+    if(/^[A-Z0-9]$/.test(ch) && joinCode.length < 4){
+      joinCode += ch; errorMsg='';
+    }
+  }
+
+  function onClick(e){
+    const {x,y} = canvasXY(e);
+    if(rects[0] && inRect(x,y,rects[0])){ launchCreate(); return; }
+    if(rects[1] && inRect(x,y,rects[1]) && joinCode.length===4){ launchJoin(); return; }
+    // Paste support — handled by keydown
+  }
+
+  function onMove(e){
+    const {x,y} = canvasXY(e); hover = -1;
+    for(let i=0;i<rects.length;i++) if(rects[i]&&inRect(x,y,rects[i])){hover=i;break;}
+    canvas.style.cursor = hover>=0 ? 'pointer' : 'text';
+  }
+
+  function inRect(x,y,r){ return x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h; }
+
+  function launchCreate(){ destroy(); startGame('online','create',''); }
+  function launchJoin(){
+    if(joinCode.length!==4){ errorMsg='Enter 4-letter code'; return; }
+    destroy(); startGame('online','join',joinCode);
+  }
+
+  canvas.addEventListener('click', onClick);
+  canvas.addEventListener('mousemove', onMove);
+  window.addEventListener('keydown', onKey);
+
+  // ── listen for ws error (wrong code etc.) so we can show it ──────────────
+  function onWsError(ev){ errorMsg = ev.detail.msg; }
+  window.addEventListener('game:ws_error', onWsError, {once:true});
+
+  function draw(){
+    if(!alive) return;
+    requestAnimationFrame(draw);
+
+    ctx.clearRect(0,0,W,H);
+    // bg
+    const sky=ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,'#050e0a'); sky.addColorStop(.5,'#071812'); sky.addColorStop(1,'#0d2e1e');
+    ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,H);
+
+    // title
+    ctx.save(); ctx.textAlign='center';
+    ctx.font='bold 36px "Courier New"'; ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=12;
+    ctx.fillText('ONLINE DUEL',W/2,80); ctx.restore();
+
+    ctx.save(); ctx.strokeStyle='rgba(78,205,196,0.25)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(W/2-200,98); ctx.lineTo(W/2+200,98); ctx.stroke(); ctx.restore();
+
+    // ── CREATE ROOM button ────────────────────────────────────────────────
+    const bw=300, bh=52, bx=W/2-bw/2;
+    const createY = 160;
+    rects[0]={x:bx,y:createY-36,w:bw,h:bh};
+    ctx.save(); ctx.textAlign='center';
+    const hotCreate = hover===0;
+    ctx.fillStyle = hotCreate?'rgba(78,205,196,0.15)':'rgba(78,205,196,0.07)';
+    ctx.fillRect(bx,createY-36,bw,bh);
+    ctx.strokeStyle = hotCreate?'#4ecdc4':'rgba(78,205,196,0.4)';
+    ctx.lineWidth=1; ctx.strokeRect(bx,createY-36,bw,bh);
+    ctx.font='bold 22px "Courier New"'; ctx.fillStyle = hotCreate?'#fff':'#4ecdc4';
+    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur = hotCreate?8:0;
+    ctx.fillText('CREATE ROOM',W/2,createY+2);
+    ctx.shadowBlur=0; ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.6)';
+    ctx.fillText('get a 4-letter code to share',W/2,createY+18);
+    ctx.restore();
+
+    // ── OR divider ────────────────────────────────────────────────────────
+    ctx.save(); ctx.textAlign='center'; ctx.fillStyle='rgba(130,170,160,0.5)';
+    ctx.font='13px "Courier New"'; ctx.fillText('— or —',W/2,240); ctx.restore();
+
+    // ── JOIN ROOM section ─────────────────────────────────────────────────
+    ctx.save(); ctx.textAlign='center';
+    ctx.font='bold 15px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.75)';
+    ctx.fillText('JOIN WITH CODE',W/2,276); ctx.restore();
+
+    // 4 letter boxes
+    const boxW=54, boxH=60, boxGap=12;
+    const totalW = 4*boxW + 3*boxGap;
+    const startX = W/2 - totalW/2;
+    const boxY   = 290;
+    for(let i=0;i<4;i++){
+      const bxb = startX + i*(boxW+boxGap);
+      const filled = i < joinCode.length;
+      const active = i === joinCode.length;
+      ctx.save();
+      ctx.fillStyle = filled?'rgba(78,205,196,0.18)':'rgba(255,255,255,0.04)';
+      ctx.fillRect(bxb,boxY,boxW,boxH);
+      ctx.strokeStyle = active?'#4ecdc4':(filled?'rgba(78,205,196,0.6)':'rgba(255,255,255,0.15)');
+      ctx.lineWidth = active?2:1;
+      ctx.strokeRect(bxb,boxY,boxW,boxH);
+      if(filled){
+        ctx.font='bold 34px "Courier New"'; ctx.fillStyle='#fff'; ctx.textAlign='center';
+        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=6;
+        ctx.fillText(joinCode[i],bxb+boxW/2,boxY+42);
+      } else if(active){
+        // cursor blink
+        if(Math.floor(Date.now()/500)%2===0){
+          ctx.fillStyle='rgba(78,205,196,0.8)'; ctx.fillRect(bxb+boxW/2-1,boxY+12,2,36);
+        }
+      }
+      ctx.restore();
+    }
+
+    // JOIN button
+    const joinBtnY = 376;
+    rects[1]={x:bx,y:joinBtnY-2,w:bw,h:44};
+    const canJoin = joinCode.length===4;
+    const hotJoin = hover===1 && canJoin;
+    ctx.save(); ctx.textAlign='center';
+    ctx.fillStyle = canJoin?(hotJoin?'rgba(78,205,196,0.18)':'rgba(78,205,196,0.09)'):'rgba(255,255,255,0.03)';
+    ctx.fillRect(bx,joinBtnY-2,bw,44);
+    ctx.strokeStyle = canJoin?(hotJoin?'#4ecdc4':'rgba(78,205,196,0.4)'):'rgba(255,255,255,0.1)';
+    ctx.lineWidth=1; ctx.strokeRect(bx,joinBtnY-2,bw,44);
+    ctx.font='bold 20px "Courier New"'; ctx.fillStyle = canJoin?(hotJoin?'#fff':'#4ecdc4'):'rgba(100,130,120,0.5)';
+    ctx.fillText('JOIN ROOM',W/2,joinBtnY+26);
+    ctx.restore();
+
+    // Error
+    if(errorMsg){
+      ctx.save(); ctx.textAlign='center'; ctx.font='bold 13px "Courier New"';
+      ctx.fillStyle='#ff6b6b'; ctx.shadowColor='#ff6b6b'; ctx.shadowBlur=8;
+      ctx.fillText(errorMsg, W/2, 438); ctx.restore();
+    }
+
+    // back hint
+    ctx.save(); ctx.textAlign='center'; ctx.fillStyle='rgba(100,140,130,0.45)';
+    ctx.font='11px "Courier New"'; ctx.fillText('ESC to go back  ·  type code then ENTER to join',W/2,H-18); ctx.restore();
+  }
+
+  requestAnimationFrame(draw);
+}
+
 // ── start game ────────────────────────────────────────────────────────────────
-function startGame(mode){
+function startGame(mode, roomAction='create', roomCode=''){
   const loading=document.getElementById('loading');
   if(loading) loading.classList.add('hidden');
 
@@ -212,9 +389,11 @@ function startGame(mode){
   const onExit  =()=>showMenu();
   const onKey   =(e)=>{if(e.code==='Escape')showMenu();};
 
-  // For online: server assigns pid via WebSocket 'assign' message
-  // For local/tutorial: pid=1 means P1 controls, but both players on same keyboard
   game = new Game(canvas, { mode, pid: 1 });
+  if(mode === 'online'){
+    game._roomAction = roomAction;
+    game._roomCode   = roomCode.toUpperCase();
+  }
   window.addEventListener('keydown',   onKey);
   window.addEventListener('game:exit', onExit);
   game.start();

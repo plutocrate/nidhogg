@@ -327,7 +327,7 @@ export class Game {
     this.mode    = opts.mode || 'online';  // 'online' | 'local' | 'tutorial'
     this.myPid   = opts.pid  || 1;         // which player am I (online only)
 
-    this.input   = new InputManager();
+    this.input   = new InputManager(this.mode);
     this.audio   = new AudioManager();
     this.fx      = new Particles();
     this.shake   = new Shake();
@@ -372,7 +372,7 @@ export class Game {
     this.audio.init().then(()=>this.audio.startAmbience()).catch(()=>{});
     this._last=performance.now();
     this._raf=requestAnimationFrame(this._tick);
-    if(this.mode==='online') this._connectWS();
+    if(this.mode==='online') this._connectWS(this._roomAction||'create', this._roomCode||'');
     else { this.state='countdown'; this.cdVal=3; this.cdMs=0; }
   }
 
@@ -385,16 +385,23 @@ export class Game {
   }
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
-  _connectWS(){
+  _connectWS(roomAction, roomCode){
     const proto = location.protocol==='https:' ? 'wss' : 'ws';
-    const url   = `${proto}://${location.host}`;
-    this.ws     = new WebSocket(url);
+    this.ws     = new WebSocket(`${proto}://${location.host}`);
+    this._lastSentInput = null;
 
+    this.ws.onopen = () => {
+      if(roomAction === 'create'){
+        this.ws.send(JSON.stringify({ type:'create_room' }));
+      } else {
+        this.ws.send(JSON.stringify({ type:'join_room', code: roomCode }));
+      }
+    };
     this.ws.onmessage = (e) => {
       try{ this._onMsg(JSON.parse(e.data)); }catch(_){}
     };
     this.ws.onclose = () => {
-      if(this.running){
+      if(this.running && this.state !== 'game_over'){
         this.msg   = {text:'DISCONNECTED', sub:'opponent left or connection lost', color:'#ff6b6b', age:0};
         this.state = 'game_over';
       }
@@ -405,10 +412,18 @@ export class Game {
     switch(msg.type){
       case 'assign':
         this.myPid = msg.pid;
+        this.roomCode = msg.code || '';
         this.state = 'waiting';
+        window.dispatchEvent(new CustomEvent('game:room_assigned', { detail: { pid: msg.pid, code: msg.code } }));
         break;
 
       case 'waiting':
+        this.roomCode = msg.code || '';
+        this.state = 'waiting';
+        break;
+
+      case 'error':
+        window.dispatchEvent(new CustomEvent('game:ws_error', { detail: { msg: msg.msg } }));
         this.state = 'waiting';
         break;
 
@@ -470,7 +485,12 @@ export class Game {
 
   _sendInput(){
     if(!this.ws||this.ws.readyState!==1) return;
-    const inp = this.myPid===1 ? this.input.p1 : this.input.p2;
+    // Online: player always controls P1 keys (WASD+J) — server knows our pid
+    const inp = this.input.p1;
+    // Only send when input actually changed — drastically reduces WS traffic
+    const s = JSON.stringify(inp);
+    if(s === this._lastSentInput) return;
+    this._lastSentInput = s;
     this.ws.send(JSON.stringify({type:'input', input:inp}));
   }
 
@@ -666,13 +686,33 @@ export class Game {
 
     // WAITING screen
     if(this.state==='waiting'){
-      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,w,h);
+      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,w,h);
       ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
       ctx.font='bold 32px "Courier New"'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=16;
-      ctx.fillText('WAITING FOR OPPONENT…',w/2,h/2-16);
-      const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
-      ctx.font='bold 16px "Courier New"'; ctx.shadowBlur=0; ctx.fillStyle='rgba(255,255,255,0.5)';
-      ctx.fillText(`You are ${this.myPid===1?'KNIGHT':'THIEF'}${dots}`,w/2,h/2+22);
+      if(this.myPid===1){
+        ctx.fillText('ROOM CREATED',w/2,h/2-60);
+        ctx.shadowBlur=0;
+        ctx.font='bold 14px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.7)';
+        ctx.fillText('Share this code with your opponent:',w/2,h/2-22);
+        // Big code box
+        const code = this.roomCode || '...';
+        ctx.fillStyle='rgba(78,205,196,0.12)';
+        ctx.fillRect(w/2-110, h/2-10, 220, 62);
+        ctx.strokeStyle='#4ecdc4'; ctx.lineWidth=1.5;
+        ctx.strokeRect(w/2-110, h/2-10, 220, 62);
+        ctx.font='bold 58px "Courier New"'; ctx.fillStyle='#fff';
+        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=22;
+        ctx.fillText(code, w/2, h/2+46);
+        ctx.shadowBlur=0;
+        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
+        ctx.font='bold 14px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.45)';
+        ctx.fillText('Waiting for opponent'+dots, w/2, h/2+86);
+      } else {
+        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
+        ctx.fillText('JOINING ROOM '+this.roomCode+dots,w/2,h/2-16);
+        ctx.shadowBlur=0; ctx.font='bold 16px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.5)';
+        ctx.fillText('You are THIEF',w/2,h/2+22);
+      }
       ctx.restore();
       return; // skip HUD while waiting
     }
