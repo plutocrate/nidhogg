@@ -1,8 +1,7 @@
-// game.js — Nidhogg Grotto Duel  (v5 — online multiplayer, no background image)
+// game.js — Nidhogg Grotto Duel
 import { InputManager } from './input.js';
 import { AudioManager }  from './audio.js';
 
-// ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const W          = 960;
 const H          = 540;
 const FLOOR_Y    = 458;
@@ -15,14 +14,12 @@ const MAX_ROUNDS = 5;
 const MAJORITY   = 3;
 const SCALE      = 3;
 
-// ─── SHARED IMAGE CACHE ───────────────────────────────────────────────────────
 const IMG_CACHE = {};
 function cachedImage(src) {
   if (!IMG_CACHE[src]) { const i=new Image(); i.src=src; IMG_CACHE[src]=i; }
   return IMG_CACHE[src];
 }
 
-// ─── SPRITE DEFS ──────────────────────────────────────────────────────────────
 const DEFS = {
   knight: { src:'assets/Knight_anin.png', fw:48, fh:32,
     anims:{
@@ -46,7 +43,6 @@ const DEFS = {
   },
 };
 
-// ─── SPRITE ───────────────────────────────────────────────────────────────────
 class Sprite {
   constructor(key) {
     this.def=DEFS[key]; this.img=cachedImage(this.def.src);
@@ -74,7 +70,6 @@ class Sprite {
   }
 }
 
-// ─── CLIENT-SIDE PLAYER (render + local physics for responsiveness) ───────────
 class Player {
   constructor(id,x,key){
     this.id=id; this.sprite=new Sprite(key);
@@ -86,8 +81,6 @@ class Player {
     this.attacking=false; this.attackCd=0; this.crouching=false; this.score=0;
     this.anim='idle';
   }
-
-  // Apply authoritative server snapshot
   applySnap(s){
     this.x=s.x; this.y=s.y; this.vx=s.vx; this.vy=s.vy;
     this.grounded=s.grounded; this.facingRight=s.facingRight;
@@ -95,14 +88,9 @@ class Player {
     this.deadX=s.deadX; this.deadY=s.deadY; this.deadAngle=s.deadAngle; this.deadTimer=s.deadTimer;
     this.attacking=s.attacking; this.crouching=s.crouching; this.anim=s.anim; this.score=s.score;
     this.sprite.flipX=!s.facingRight;
-    // Don't override current sprite frame mid-animation, just update anim name
     if(this.sprite.anim!==s.anim) this.sprite.play(s.anim);
   }
-
-  update(dt){
-    this.sprite.update(dt);
-  }
-
+  update(dt){ this.sprite.update(dt); }
   draw(ctx){
     if(this.dead){
       const alpha=Math.max(0,1-this.deadTimer/1500);
@@ -115,7 +103,6 @@ class Player {
   }
 }
 
-// ─── PARTICLES ────────────────────────────────────────────────────────────────
 class Particles {
   constructor(){this.p=[];}
   blood(x,y,dir){
@@ -128,20 +115,11 @@ class Particles {
       this.p.push({x,y,vx:Math.cos(a)*5,vy:Math.sin(a)*5-2,life:1,decay:.04+Math.random()*.03,r:2,col:'#ffe8c0'});
     }
   }
-  update(){
-    this.p=this.p.filter(p=>p.life>0);
-    for(const p of this.p){p.x+=p.vx;p.y+=p.vy;p.vy+=.3;p.vx*=.96;p.life-=p.decay;}
-  }
-  draw(ctx){
-    for(const p of this.p){
-      ctx.save();ctx.globalAlpha=p.life*p.life;ctx.fillStyle=p.col;
-      ctx.beginPath();ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();
-    }
-  }
+  update(){ this.p=this.p.filter(p=>p.life>0); for(const p of this.p){p.x+=p.vx;p.y+=p.vy;p.vy+=.3;p.vx*=.96;p.life-=p.decay;} }
+  draw(ctx){ for(const p of this.p){ctx.save();ctx.globalAlpha=p.life*p.life;ctx.fillStyle=p.col;ctx.beginPath();ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2);ctx.fill();ctx.restore();} }
   clear(){this.p=[];}
 }
 
-// ─── SCREEN SHAKE ─────────────────────────────────────────────────────────────
 class Shake {
   constructor(){this.v=0;}
   hit(n){this.v=Math.max(this.v,n);}
@@ -149,7 +127,6 @@ class Shake {
   off(){return this.v<.2?{x:0,y:0}:{x:(Math.random()-.5)*this.v*2.2,y:(Math.random()-.5)*this.v*2.2};}
 }
 
-// ─── SLOW MO ──────────────────────────────────────────────────────────────────
 class SlowMo {
   constructor(){this.t=0;this.on=false;this.dur=680;}
   hit(){this.t=0;this.on=true;}
@@ -161,134 +138,17 @@ class SlowMo {
   get m(){if(!this.on)return 1;const p=this.t/this.dur;return p<.25?.12:.12+(1-.12)*((p-.25)/.75);}
 }
 
-// ─── PROCEDURAL CAVE BACKGROUND ───────────────────────────────────────────────
-// Rendered once to an offscreen canvas so it's fast every frame
-class CaveBG {
-  constructor(){
-    this.cvs=document.createElement('canvas');
-    this.cvs.width=W; this.cvs.height=H;
-    this._paint();
-  }
-
-  _paint(){
-    const ctx=this.cvs.getContext('2d');
-
-    // Deep cave sky gradient
-    const sky=ctx.createLinearGradient(0,0,0,H);
-    sky.addColorStop(0,'#050e0a');
-    sky.addColorStop(0.35,'#071812');
-    sky.addColorStop(0.7,'#0a2218');
-    sky.addColorStop(1,'#0d2e1e');
-    ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
-
-    // Distant foggy glow — moonlight shaft from upper-right
-    const shaft=ctx.createRadialGradient(W*.78,0,0,W*.78,0,H*.8);
-    shaft.addColorStop(0,'rgba(140,210,195,0.18)');
-    shaft.addColorStop(0.4,'rgba(80,160,140,0.06)');
-    shaft.addColorStop(1,'transparent');
-    ctx.fillStyle=shaft; ctx.fillRect(0,0,W,H);
-
-    // Stalactite silhouettes — top edge
-    ctx.fillStyle='#020a06';
-    const rng=seeded(42);
-    for(let i=0;i<22;i++){
-      const x=(i/22)*W+rng()*30-15;
-      const w=18+rng()*40;
-      const h=30+rng()*110;
-      ctx.beginPath();
-      ctx.moveTo(x-w/2,0); ctx.lineTo(x+w/2,0);
-      ctx.lineTo(x+w*(.1+rng()*.15),h); ctx.lineTo(x-w*(.1+rng()*.15),h);
-      ctx.closePath(); ctx.fill();
-    }
-
-    // Stalagmite silhouettes — bottom edge (above floor)
-    for(let i=0;i<16;i++){
-      const x=(i/16)*W+rng()*40-20;
-      const tw=14+rng()*28;
-      const th=20+rng()*70;
-      const base=H;
-      ctx.beginPath();
-      ctx.moveTo(x-tw/2,base); ctx.lineTo(x+tw/2,base);
-      ctx.lineTo(x+tw*(.08+rng()*.12),base-th); ctx.lineTo(x-tw*(.08+rng()*.12),base-th);
-      ctx.closePath(); ctx.fill();
-    }
-
-    // Cave wall boulders — left and right sides
-    ctx.fillStyle='#061008';
-    for(let side=0;side<2;side++){
-      for(let i=0;i<6;i++){
-        const bx=side===0 ? rng()*90 : W-rng()*90;
-        const by=80+rng()*(H-160);
-        const br=30+rng()*60;
-        ctx.beginPath(); ctx.ellipse(bx,by,br,br*.6,rng()*.8,0,Math.PI*2); ctx.fill();
-      }
-    }
-
-    // Subtle green bioluminescent moss patches
-    const moss=ctx.createRadialGradient(W*.15,FLOOR_Y-12,0,W*.15,FLOOR_Y-12,120);
-    moss.addColorStop(0,'rgba(40,120,60,0.18)');
-    moss.addColorStop(1,'transparent');
-    ctx.fillStyle=moss; ctx.fillRect(0,0,W,H);
-    const moss2=ctx.createRadialGradient(W*.82,FLOOR_Y-8,0,W*.82,FLOOR_Y-8,90);
-    moss2.addColorStop(0,'rgba(30,110,55,0.14)');
-    moss2.addColorStop(1,'transparent');
-    ctx.fillStyle=moss2; ctx.fillRect(0,0,W,H);
-
-    // Atmosphere haze near floor
-    const haze=ctx.createLinearGradient(0,FLOOR_Y-60,0,FLOOR_Y);
-    haze.addColorStop(0,'transparent');
-    haze.addColorStop(1,'rgba(10,30,18,0.35)');
-    ctx.fillStyle=haze; ctx.fillRect(0,FLOOR_Y-60,W,60);
-  }
-
-  draw(ctx){ ctx.drawImage(this.cvs,0,0); }
-}
-
-function seeded(seed){
-  let s=seed;
-  return function(){ s=(s*16807+0)%2147483647; return (s-1)/2147483646; };
-}
-
-// ─── GROUND (tiled grass with overlay) ───────────────────────────────────────
-class Ground {
-  constructor(){this.tile=cachedImage('assets/Grass.png');}
-  draw(ctx,w,h){
-    const tw=40,th=40;
-    if(!this.tile.complete||!this.tile.naturalWidth){
-      ctx.fillStyle='#1a3a12'; ctx.fillRect(0,FLOOR_Y,w,h-FLOOR_Y); return;
-    }
-    ctx.save();
-    ctx.beginPath(); ctx.rect(0,FLOOR_Y,w,h-FLOOR_Y); ctx.clip();
-    ctx.imageSmoothingEnabled=false;
-    for(let x=0;x<w;x+=tw) for(let y=FLOOR_Y;y<h;y+=th)
-      ctx.drawImage(this.tile,x,y,tw,th);
-    ctx.globalCompositeOperation='multiply';
-    ctx.fillStyle='rgba(40,70,30,0.6)'; ctx.fillRect(0,FLOOR_Y,w,h-FLOOR_Y);
-    ctx.globalCompositeOperation='source-over';
-    const grad=ctx.createLinearGradient(0,FLOOR_Y-6,0,FLOOR_Y+10);
-    grad.addColorStop(0,'rgba(0,0,0,0.5)'); grad.addColorStop(1,'rgba(0,0,0,0)');
-    ctx.fillStyle=grad; ctx.fillRect(0,FLOOR_Y-6,w,16);
-    ctx.restore();
-  }
-}
-
-// ─── HUD ──────────────────────────────────────────────────────────────────────
 function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
   ctx.save();
-  // labels
   ctx.font='bold 13px "Courier New"'; ctx.textAlign='left';
   ctx.fillStyle='#e63946'; ctx.shadowColor='#e63946'; ctx.shadowBlur=7;
   ctx.fillText('KNIGHT'+(myPid===1?' ◀':''), 20,22);
   ctx.textAlign='right'; ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4';
   ctx.fillText((myPid===2?'▶ ':'')+' THIEF', w-20,22);
   ctx.shadowBlur=0;
-
-  // round counter
   ctx.textAlign='center'; ctx.font='bold 12px "Courier New"';
   ctx.fillStyle='rgba(255,255,255,0.48)';
   ctx.fillText(`ROUND  ${round} / ${maxR}`,w/2,16);
-
-  // pip row
   const PW=14,PH=10,PG=5,rowW=maxR*(PW+PG)-PG;
   const rx=w/2-rowW/2, ry=22;
   for(let i=0;i<maxR;i++){
@@ -299,8 +159,6 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
     ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1; ctx.strokeRect(px,ry,PW,PH);
   }
   ctx.restore();
-
-  // centre message
   if(msg&&msg.text){
     const age=msg.age||0;
     let alpha=Math.min(1,age/110);
@@ -322,43 +180,38 @@ function drawHUD(ctx,p1,p2,w,h,round,maxR,state,msg,myPid){
 // ─── GAME ─────────────────────────────────────────────────────────────────────
 export class Game {
   constructor(canvas, opts={}) {
-    this.canvas  = canvas;
-    this.ctx     = canvas.getContext('2d');
-    this.mode    = opts.mode || 'online';  // 'online' | 'local' | 'tutorial'
-    this.myPid   = opts.pid  || 1;         // which player am I (online only)
+    this.canvas     = canvas;
+    this.ctx        = canvas.getContext('2d');
+    this.mode       = opts.mode       || 'online';
+    this.roomAction = opts.roomAction || 'create';
+    this.roomCode   = (opts.roomCode  || '').toUpperCase();
+    this.myPid      = 1;  // server will assign
 
-    this.input   = new InputManager(this.mode);
-    this.audio   = new AudioManager();
-    this.fx      = new Particles();
-    this.shake   = new Shake();
-    this.slow    = new SlowMo();
-    this.caveBG  = new CaveBG();
-    this.ground  = new Ground();
+    this.input  = new InputManager(this.mode);
+    this.audio  = new AudioManager();
+    this.fx     = new Particles();
+    this.shake  = new Shake();
+    this.slow   = new SlowMo();
 
-    // state
-    this.round   = 1;
-    this.state   = 'waiting';
-    this.msg     = null;
-    this.cdVal   = 3; this.cdMs=0;
-    this.roundMs = 0;
-    this.hitDone = false;
-    this.tutPhase= 0;
+    this.round    = 1;
+    this.state    = this.mode==='online' ? 'connecting' : 'countdown';
+    this.msg      = null;
+    this.cdVal    = 3; this.cdMs=0;
+    this.roundMs  = 0;
+    this.hitDone  = false;
+    this.tutPhase = 0;
 
     this._spawn(0,0);
 
     this.running = false;
     this._raf    = null;
-    this._tick   = this._tick.bind(this);
+    this._tickFn = this._tick.bind(this);
     this._last   = 0;
-
-    // WebSocket (online mode)
     this.ws      = null;
-    this._pendingKill = null;  // {atkId, defId} received from server before render
+    this._lastSentInput = null;
   }
 
-  // ── local game init ───────────────────────────────────────────────────────
   _spawn(s1,s2){
-    const key2 = this.mode==='tutorial' ? 'thief' : 'thief';
     this.p1 = new Player(1, W*0.28, 'knight');
     this.p2 = new Player(2, W*0.72, 'thief');
     this.p1.score=s1; this.p2.score=s2;
@@ -366,78 +219,86 @@ export class Game {
     this.p2.facingRight=false; this.p2.sprite.flipX=true;
   }
 
-  // ── lifecycle ─────────────────────────────────────────────────────────────
   start(){
-    this.running=true;
+    this.running = true;
     this.audio.init().then(()=>this.audio.startAmbience()).catch(()=>{});
-    this._last=performance.now();
-    this._raf=requestAnimationFrame(this._tick);
-    if(this.mode==='online') this._connectWS(this._roomAction||'create', this._roomCode||'');
-    else { this.state='countdown'; this.cdVal=3; this.cdMs=0; }
+    this._last = performance.now();
+    this._raf  = requestAnimationFrame(this._tickFn);
+    if(this.mode==='online') this._connectWS();
   }
 
   stop(){
-    this.running=false;
-    if(this._raf){cancelAnimationFrame(this._raf);this._raf=null;}
+    this.running = false;
+    if(this._raf){ cancelAnimationFrame(this._raf); this._raf=null; }
     this.audio.stopAmbience();
     this.input.destroy();
-    if(this.ws){try{this.ws.close();}catch(e){}  this.ws=null;}
+    if(this.ws){ try{ this.ws.close(); }catch(e){} this.ws=null; }
   }
 
-  // ── WebSocket ─────────────────────────────────────────────────────────────
-  _connectWS(roomAction, roomCode){
+  // ── WebSocket ───────────────────────────────────────────────────────────────
+  _connectWS(){
     const proto = location.protocol==='https:' ? 'wss' : 'ws';
-    this.ws     = new WebSocket(`${proto}://${location.host}`);
-    this._lastSentInput = null;
+    try {
+      this.ws = new WebSocket(`${proto}://${location.host}`);
+    } catch(e) {
+      this._wsConnectFailed('Could not connect to server');
+      return;
+    }
 
     this.ws.onopen = () => {
-      if(roomAction === 'create'){
+      if(this.roomAction === 'create'){
         this.ws.send(JSON.stringify({ type:'create_room' }));
       } else {
-        this.ws.send(JSON.stringify({ type:'join_room', code: roomCode }));
+        this.ws.send(JSON.stringify({ type:'join_room', code: this.roomCode }));
       }
     };
-    this.ws.onerror = () => {
-      // onerror always fires before onclose — just log, onclose handles the UI
-      console.warn('[WS] connection error');
+
+    this.ws.onerror = () => { /* onclose will fire right after */ };
+
+    this.ws.onclose = (ev) => {
+      if(!this.running) return;
+      if(this.state === 'connecting' || this.state === 'waiting'){
+        // Failed before game started — go back to lobby with error
+        const reason = ev.code === 1006
+          ? 'Cannot connect to server. Is it running?'
+          : 'Connection lost before game started.';
+        this._wsConnectFailed(reason);
+      } else if(this.state !== 'game_over'){
+        this.msg   = {text:'DISCONNECTED', sub:'connection lost', color:'#ff6b6b', age:0};
+        this.state = 'game_over';
+      }
     };
+
     this.ws.onmessage = (e) => {
       try{ this._onMsg(JSON.parse(e.data)); }catch(_){}
     };
-    this.ws.onclose = () => {
-      if(!this.running) return;
-      // If we close while actively playing/in countdown, show disconnected
-      if(this.state === 'playing' || this.state === 'countdown' || this.state === 'round_end'){
-        this.msg   = {text:'DISCONNECTED', sub:'opponent left or connection lost', color:'#ff6b6b', age:0};
-        this.state = 'game_over';
-      } else if(this.state === 'waiting'){
-        // Connection dropped while waiting — show reconnect option
-        this._wsError = 'Connection lost. Check your internet and try again.';
-        window.dispatchEvent(new CustomEvent('game:ws_error', { detail: { msg: this._wsError } }));
-        this._exitToMenu();
-      }
-    };
-    // Handle pong (keep-alive response) — no-op, just prevents errors
-    this.ws.addEventListener('message', () => {}); // pong handled by ws lib
+  }
+
+  _wsConnectFailed(reason){
+    // Stop the game loop and fire exit so main.js goes back to lobby
+    this.running = false;
+    if(this._raf){ cancelAnimationFrame(this._raf); this._raf=null; }
+    this.input.destroy();
+    if(this.ws){ try{this.ws.close();}catch(e){} this.ws=null; }
+    window.dispatchEvent(new CustomEvent('game:ws_error', { detail:{ msg: reason } }));
+    window.dispatchEvent(new CustomEvent('game:exit'));
   }
 
   _onMsg(msg){
     switch(msg.type){
       case 'assign':
-        this.myPid = msg.pid;
+        this.myPid    = msg.pid;
         this.roomCode = msg.code || '';
-        this.state = 'waiting';
-        window.dispatchEvent(new CustomEvent('game:room_assigned', { detail: { pid: msg.pid, code: msg.code } }));
+        this.state    = 'waiting';
         break;
 
       case 'waiting':
         this.roomCode = msg.code || '';
-        this.state = 'waiting';
+        this.state    = 'waiting';
         break;
 
       case 'error':
-        window.dispatchEvent(new CustomEvent('game:ws_error', { detail: { msg: msg.msg } }));
-        this.state = 'waiting';
+        this._wsConnectFailed(msg.msg || 'Server error');
         break;
 
       case 'start':
@@ -451,7 +312,6 @@ export class Game {
       case 'kill': {
         const atk = msg.atk===1 ? this.p1 : this.p2;
         const def = msg.atk===1 ? this.p2 : this.p1;
-        this._pendingKill = { atkId:msg.atk, defId:msg.def, scores:msg.scores };
         this.slow.hit(); this.shake.hit(14);
         this.fx.blood(def.x, def.y, atk.facingRight?1:-1);
         this.audio.playDeathImpact();
@@ -474,10 +334,8 @@ export class Game {
       }
 
       case 'state':
-        // authoritative snapshot — apply to both players
         if(msg.p1) this.p1.applySnap(msg.p1);
         if(msg.p2) this.p2.applySnap(msg.p2);
-        // sync server state/round/cd if we're out of sync
         if(msg.state && this.state!=='round_end' && this.state!=='game_over'){
           this.state = msg.state;
         }
@@ -489,7 +347,7 @@ export class Game {
         break;
 
       case 'opponent_left':
-        this.msg   = {text:'OPPONENT LEFT', sub:'returning to menu…', color:'#ff6b6b', age:0};
+        this.msg   = {text:'OPPONENT LEFT', sub:'returning to lobby…', color:'#ff6b6b', age:0};
         this.state = 'game_over';
         setTimeout(()=>this._exitToMenu(), 3000);
         break;
@@ -498,19 +356,17 @@ export class Game {
 
   _sendInput(){
     if(!this.ws||this.ws.readyState!==1) return;
-    // Online: player always controls P1 keys (WASD+J) — server knows our pid
-    const inp = this.input.p1;
-    // Only send when input actually changed — drastically reduces WS traffic
-    const s = JSON.stringify(inp);
-    if(s === this._lastSentInput) return;
+    const inp = this.input.p1;  // both online players use WASD+J
+    const s   = JSON.stringify(inp);
+    if(s===this._lastSentInput) return;
     this._lastSentInput = s;
     this.ws.send(JSON.stringify({type:'input', input:inp}));
   }
 
-  // ── main loop ─────────────────────────────────────────────────────────────
+  // ── main loop ────────────────────────────────────────────────────────────────
   _tick(now){
     if(!this.running)return;
-    this._raf=requestAnimationFrame(this._tick);
+    this._raf=requestAnimationFrame(this._tickFn);
     const raw=Math.min(now-this._last,50);
     this._last=now;
     const mul=this.slow.tick(raw);
@@ -523,23 +379,18 @@ export class Game {
   _update(dt,raw){
     this.shake.tick(); this.fx.update();
 
-    // send input to server every frame (online)
-    if(this.mode==='online') this._sendInput();
-
     if(this.mode==='online'){
-      // Online: just update sprite timers (server drives positions)
-      this.p1.update(dt);
-      this.p2.update(dt);
+      if(this.state==='playing'||this.state==='countdown') this._sendInput();
+      this.p1.update(dt); this.p2.update(dt);
       if(this.msg) this.msg.age+=raw;
       if(this.state==='game_over'){
         const i=this.input;
-        if(i.p1Pressed.attack||i.p1Pressed.jump||i.p2Pressed.attack||i.p2Pressed.jump)
-          this._exitToMenu();
+        if(i.p1Pressed.attack||i.p1Pressed.jump) this._exitToMenu();
       }
       return;
     }
 
-    // ─ LOCAL / TUTORIAL ────────────────────────────────────────────────────
+    // LOCAL / TUTORIAL
     if(this.state==='countdown'){
       this.cdMs+=raw;
       while(this.cdMs>=1000){
@@ -548,7 +399,6 @@ export class Game {
       }
       this._localUpdatePlayers(dt,true); return;
     }
-
     if(this.state==='playing'){
       this._localUpdatePlayers(dt,false);
       if(!this.hitDone){
@@ -556,13 +406,11 @@ export class Game {
         else if(this._localHit(this.p2,this.p1)){this._localKill(this.p2,this.p1);this.hitDone=true;}
       }
     }
-
     if(this.state==='round_end'){
       this._localUpdatePlayers(dt,true);
       this.roundMs+=raw; if(this.msg)this.msg.age+=raw;
       if(this.roundMs>=ROUND_DELAY) this._localNextRound();
     }
-
     if(this.state==='game_over'){
       if(this.msg)this.msg.age+=raw;
       const i=this.input;
@@ -571,7 +419,6 @@ export class Game {
     }
   }
 
-  // ─ LOCAL HELPERS ──────────────────────────────────────────────────────────
   _localUpdatePlayers(dt,lock){
     const blank={left:false,right:false,jump:false,crouch:false,attack:false};
     const in1=lock?blank:this.input.p1;
@@ -670,18 +517,20 @@ export class Game {
     window.dispatchEvent(new CustomEvent('game:exit'));
   }
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // ── render ──────────────────────────────────────────────────────────────────
   _render(){
     const ctx=this.ctx,w=W,h=H;
 
-    // cave BG (prerendered)
-    ctx.clearRect(0,0,w,h);
-    this.caveBG.draw(ctx);
+    // Pure black background — no images, no cave, no tiles
+    ctx.fillStyle='#000';
+    ctx.fillRect(0,0,w,h);
 
-    // tiled ground
-    this.ground.draw(ctx,w,h);
+    // Thin floor line for visual reference
+    ctx.strokeStyle='rgba(255,255,255,0.12)';
+    ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,FLOOR_Y+1); ctx.lineTo(w,FLOOR_Y+1); ctx.stroke();
 
-    // screen shake
+    // Screen shake
     const off=this.shake.off();
     ctx.save(); ctx.translate(off.x,off.y);
     this.fx.draw(ctx);
@@ -689,7 +538,7 @@ export class Game {
     this.p2.draw(ctx);
     ctx.restore();
 
-    // slow-mo vignette
+    // Slow-mo vignette
     if(this.slow.on){
       const t=1-this.slow.m;
       const g=ctx.createRadialGradient(w/2,h/2,h*.28,w/2,h/2,h*.88);
@@ -697,40 +546,47 @@ export class Game {
       ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
     }
 
-    // WAITING screen
-    if(this.state==='waiting'){
-      ctx.save(); ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,w,h);
-      ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
-      ctx.font='bold 32px "Courier New"'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=16;
-      if(this.myPid===1){
-        ctx.fillText('ROOM CREATED',w/2,h/2-60);
-        ctx.shadowBlur=0;
-        ctx.font='bold 14px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.7)';
-        ctx.fillText('Share this code with your opponent:',w/2,h/2-22);
-        // Big code box
-        const code = this.roomCode || '...';
-        ctx.fillStyle='rgba(78,205,196,0.12)';
-        ctx.fillRect(w/2-110, h/2-10, 220, 62);
-        ctx.strokeStyle='#4ecdc4'; ctx.lineWidth=1.5;
-        ctx.strokeRect(w/2-110, h/2-10, 220, 62);
-        ctx.font='bold 58px "Courier New"'; ctx.fillStyle='#fff';
-        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=22;
-        ctx.fillText(code, w/2, h/2+46);
-        ctx.shadowBlur=0;
-        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
-        ctx.font='bold 14px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.45)';
-        ctx.fillText('Waiting for opponent'+dots, w/2, h/2+86);
-      } else {
-        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
-        ctx.fillText('JOINING ROOM '+this.roomCode+dots,w/2,h/2-16);
-        ctx.shadowBlur=0; ctx.font='bold 16px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.5)';
-        ctx.fillText('You are THIEF',w/2,h/2+22);
-      }
-      ctx.restore();
-      return; // skip HUD while waiting
+    // CONNECTING screen
+    if(this.state==='connecting'){
+      ctx.save(); ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
+      ctx.font='bold 24px "Courier New"';
+      const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
+      ctx.fillText('Connecting'+dots,w/2,h/2);
+      ctx.restore(); return;
     }
 
-    // countdown
+    // WAITING screen (host waits for opponent)
+    if(this.state==='waiting'){
+      ctx.save(); ctx.textAlign='center';
+      ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=14;
+      ctx.font='bold 28px "Courier New"';
+      if(this.myPid===1){
+        ctx.fillText('ROOM CREATED',w/2,h/2-70);
+        ctx.shadowBlur=0;
+        ctx.font='bold 14px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.7)';
+        ctx.fillText('Share this code with your opponent:',w/2,h/2-32);
+        // Code box
+        ctx.fillStyle='rgba(78,205,196,0.1)';
+        ctx.fillRect(w/2-110,h/2-18,220,64);
+        ctx.strokeStyle='#4ecdc4'; ctx.lineWidth=1.5;
+        ctx.strokeRect(w/2-110,h/2-18,220,64);
+        ctx.font='bold 54px "Courier New"'; ctx.fillStyle='#fff';
+        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=20;
+        ctx.fillText(this.roomCode||'…',w/2,h/2+38);
+        ctx.shadowBlur=0;
+        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
+        ctx.font='13px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.4)';
+        ctx.fillText('Waiting for opponent'+dots,w/2,h/2+74);
+      } else {
+        const dots='.'.repeat(1+Math.floor(Date.now()/500)%3);
+        ctx.fillText('JOINING ROOM '+this.roomCode,w/2,h/2-20);
+        ctx.shadowBlur=0; ctx.font='14px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.45)';
+        ctx.fillText('Connected'+dots,w/2,h/2+16);
+      }
+      ctx.restore(); return;
+    }
+
+    // Countdown
     if(this.state==='countdown'||(this.state==='playing'&&this.cdVal===0&&this.cdMs<700)){
       const label=this.cdVal>0?String(this.cdVal):'FIGHT!';
       const fadeAlpha=this.state==='playing'?Math.max(0,1-this.cdMs/500):1;
@@ -746,7 +602,7 @@ export class Game {
     // HUD
     drawHUD(ctx,this.p1,this.p2,w,h,this.round,MAX_ROUNDS,this.state,this.msg,this.myPid);
 
-    // tutorial hints
+    // Tutorial hints
     if(this.mode==='tutorial'){
       const lines=['A/D Move  W Jump  S Crouch  J Attack','Get close and thrust — one hit kills!','Watch spacing. The first strike wins.'];
       ctx.save(); ctx.globalAlpha=.82;
@@ -756,7 +612,7 @@ export class Game {
       ctx.restore();
     }
 
-    // game-over dim
+    // Game-over dim
     if(this.state==='game_over'){
       ctx.fillStyle='rgba(0,0,0,0.38)'; ctx.fillRect(0,0,w,h);
     }
