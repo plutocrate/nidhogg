@@ -1,4 +1,3 @@
-// main.js
 import { Game } from './game.js';
 import { AudioManager } from './audio.js';
 
