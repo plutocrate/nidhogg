@@ -1,1 +1,1 @@
-[game link](https://nidhogg-production.up.railway.app/)
+[game link server](https://nidhogg-production.up.railway.app/)
