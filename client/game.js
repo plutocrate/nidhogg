@@ -315,7 +315,7 @@ function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
   }
 
   // Round-win / game-over message
-  if(msg&&msg.text && state!=='countdown' && state!=='playing'){
+  if(msg&&msg.text && (state==='round_end' || state==='game_over')){
     const age=msg.age||0, alpha=Math.min(1,age/120);
     ctx.globalAlpha=alpha; ctx.textAlign='center';
     ctx.font='bold 62px "Courier New"';
@@ -344,7 +344,9 @@ export class Game {
     this.myPid  = opts.myPid || 1;
 
     this.input = new InputManager(this.mode);
-    this.audio = new AudioManager();
+    // Use injected audio instance (shared singleton from main.js) if provided,
+    // otherwise fall back to a fresh one (for standalone/test use).
+    this.audio = opts.audio || new AudioManager();
     this.fx    = new Particles();
     this.shake = new Shake();
     this.slow  = new SlowMo();
@@ -379,7 +381,13 @@ export class Game {
 
   start() {
     this.running = true;
-    this.audio.init().then(()=>this.audio.startAmbience()).catch(()=>{});
+    // If audio wasn't unlocked yet (edge case: game launched before any gesture),
+    // init now. Otherwise startAmbience() is a no-op if BGM already runs.
+    if (!this.audio.initialized) {
+      this.audio.init().then(() => this.audio.startAmbience()).catch(() => {});
+    } else {
+      this.audio.startAmbience();
+    }
     this._last = performance.now();
     this._raf  = requestAnimationFrame(this._tickFn);
     if(this.mode==='online' && this.ws) this._attachWS();
@@ -413,6 +421,9 @@ export class Game {
         if(msg.p2) this.p2.applySnap(msg.p2);
         if(msg.state && this.state!=='round_end' && this.state!=='game_over')
           this.state=msg.state;
+        // Clear round-win message as soon as a new countdown/fight starts
+        if((msg.state==='countdown'||msg.state==='playing') && this.msg && this.state!=='game_over')
+          this.msg=null;
         this.round  = msg.round || this.round;
         this.cdVal  = msg.cdVal!=null ? msg.cdVal : this.cdVal;
         this.cdMs   = msg.cdMs !=null ? msg.cdMs  : this.cdMs;

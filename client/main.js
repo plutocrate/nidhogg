@@ -1,5 +1,22 @@
 // main.js
 import { Game } from './game.js';
+import { AudioManager } from './audio.js';
+
+// ─── SHARED AUDIO SINGLETON ───────────────────────────────────────────────────
+// One AudioManager for the entire page lifetime.
+// initAudio() is triggered on the very first user gesture (key or click),
+// unlocking the AudioContext and immediately starting BGM + background SFX decode.
+// The Game receives this same instance so it never re-initialises the context.
+const sharedAudio = new AudioManager();
+let _audioUnlocked = false;
+
+function unlockAudio() {
+  if (_audioUnlocked) return;
+  _audioUnlocked = true;
+  sharedAudio.initAudio().catch(() => {});
+}
+window.addEventListener('keydown', unlockAudio, { once: true });
+window.addEventListener('click',   unlockAudio, { once: true });
 
 const canvas = document.getElementById('game-canvas');
 const W = 960, H = 540;
@@ -58,6 +75,7 @@ class Menu {
   }
 
   _key(e){
+    unlockAudio();
     if(this.state==='controls'){ if(['Escape','Enter','Space'].includes(e.code)) this.state='main'; return; }
     if(e.code==='ArrowUp'  ||e.code==='KeyW') this.sel=(this.sel-1+this.items.length)%this.items.length;
     if(e.code==='ArrowDown'||e.code==='KeyS') this.sel=(this.sel+1)%this.items.length;
@@ -65,6 +83,7 @@ class Menu {
   }
 
   _click(e){
+    unlockAudio();
     if(this.state==='controls'){ this.state='main'; return; }
     const {x,y} = canvasXY(e);
     for(let i=0;i<this.rects.length;i++){
@@ -216,6 +235,7 @@ function showOnlineLobby(prefillError){
 
   function onKey(e){
     if(!alive) return;
+    unlockAudio();
     if(e.code==='Escape'){
       if(phase==='waiting_opponent'||phase==='connecting'||phase==='joining'){
         closeWS(); phase='choose'; errorMsg=''; return;
@@ -231,6 +251,7 @@ function showOnlineLobby(prefillError){
 
   function onClick(e){
     if(!alive || phase!=='choose') return;
+    unlockAudio();
     const {x,y}=canvasXY(e);
     if(rects[0]&&hit(x,y,rects[0])){ doCreate(); return; }
     if(rects[1]&&hit(x,y,rects[1])&&joinCode.length===4){ doJoin(); return; }
@@ -475,7 +496,7 @@ function startGame(socket, pid, roomCode, myPid){
   function onExit(){ finish(); }
   window.addEventListener('game:exit', onExit);
 
-  game = new Game(canvas, { mode:'online', myPid: pid, roomCode, socket });
+  game = new Game(canvas, { mode:'online', myPid: pid, roomCode, socket, audio: sharedAudio });
   game.start();
 }
 
@@ -499,7 +520,7 @@ function startLocal(mode){
   window.addEventListener('game:exit', onExit);
   window.addEventListener('keydown',   onKey);
 
-  game = new Game(canvas, { mode });
+  game = new Game(canvas, { mode, audio: sharedAudio });
   game.start();
 }
 
