@@ -9,19 +9,9 @@ export class AudioManager {
     this._buffers    = {};        // key → AudioBuffer
     this._pools      = {};        // key → array of {src,gain} pre-wired nodes
     this._bgmSource  = null;
-    this._bgmIndex   = 0;
-    this._bgmShuffle = [];
-    this._bgmLoading = false;
 
-    this.bgmTracks = [
-      'assets/1__Bright_Moments.wav',
-      'assets/2__Cliffside_party_Drive.wav',
-      'assets/3__Electric_Dancing.wav',
-      'assets/4__RoboTrance.wav',
-      'assets/5__Party_Knocking.wav',
-      'assets/6__Expressive_Electronica.wav',
-      'assets/7__Countdown_to_the_Beat_Drop.wav',
-    ];
+    // Single BGM track — loops forever
+    this.bgmTrack = 'assets/1__Bright_Moments.wav';
 
     // SFX files — all decoded at init, pool of 4 pre-wired nodes each
     this.sfxDefs = {
@@ -69,11 +59,10 @@ export class AudioManager {
       })
     );
 
-    this._shuffleBGM();
     this.initialized = true;
   }
 
-  // Fetch + decode audio — shared cache so BGM tracks are only fetched once
+  // Fetch + decode audio
   async _fetchDecode(url) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -123,59 +112,33 @@ export class AudioManager {
   }
 
   // ── BGM ──────────────────────────────────────────────────────────────────────
-  _shuffleBGM() {
-    this._bgmShuffle = [...Array(this.bgmTracks.length).keys()];
-    for (let i = this._bgmShuffle.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [this._bgmShuffle[i], this._bgmShuffle[j]] = [this._bgmShuffle[j], this._bgmShuffle[i]];
-    }
-    this._bgmIndex = 0;
-  }
+  async startAmbience() {
+    if (!this.initialized) return;
+    // Already playing — don't start a second source
+    if (this._bgmSource) return;
 
-  async _playNextTrack() {
-    if (!this.initialized || this._bgmLoading) return;
-    this._bgmLoading = true;
-    if (this._bgmSource) { try { this._bgmSource.stop(); } catch(_){} this._bgmSource = null; }
-
-    const trackIdx = this._bgmShuffle[this._bgmIndex % this._bgmShuffle.length];
-    const url      = this.bgmTracks[trackIdx];
-    const cacheKey = 'bgm_' + trackIdx;
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
 
     try {
-      if (!this._buffers[cacheKey]) {
-        this._buffers[cacheKey] = await this._fetchDecode(url);
+      if (!this._buffers['bgm']) {
+        this._buffers['bgm'] = await this._fetchDecode(this.bgmTrack);
       }
       const src = this.ctx.createBufferSource();
-      src.buffer = this._buffers[cacheKey];
+      src.buffer = this._buffers['bgm'];
+      src.loop = true;           // loop forever — no track-switching needed
       src.connect(this.bgmFilter);
-      src.onended = () => {
-        this._bgmIndex++;
-        if (this._bgmIndex >= this._bgmShuffle.length) { this._bgmIndex=0; this._shuffleBGM(); }
-        this._playNextTrack();
-      };
       src.start(0);
       this._bgmSource = src;
-
-      // Prefetch the next track while current plays (so no gap)
-      const nextIdx = this._bgmShuffle[(this._bgmIndex + 1) % this._bgmShuffle.length];
-      const nextKey = 'bgm_' + nextIdx;
-      if (!this._buffers[nextKey]) {
-        this._fetchDecode(this.bgmTracks[nextIdx])
-          .then(b => { this._buffers[nextKey] = b; })
-          .catch(()=>{});
-      }
-    } catch(e) { console.warn('[audio] BGM failed:', e); }
-    this._bgmLoading = false;
-  }
-
-  startAmbience() {
-    if (!this.initialized) return;
-    if (this.ctx.state === 'suspended') this.ctx.resume().then(()=>this._playNextTrack());
-    else this._playNextTrack();
+    } catch (e) {
+      console.warn('[audio] BGM failed:', e);
+    }
   }
 
   stopAmbience() {
-    if (this._bgmSource) { try { this._bgmSource.stop(); } catch(_){} this._bgmSource = null; }
+    if (this._bgmSource) {
+      try { this._bgmSource.stop(); } catch (_) {}
+      this._bgmSource = null;
+    }
   }
 
   // ── Public SFX API ───────────────────────────────────────────────────────────
