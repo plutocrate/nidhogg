@@ -1,6 +1,6 @@
 // input.js — Input manager
 // Online: P1 uses WASD + J(attack) + K(parry)
-// Local:  P1 = above,  P2 = Arrows + L(attack) + ;(parry)
+// Local:  P1 = above,  P2 = Arrows + Num1(attack) + Num2(parry)
 
 const KEY_MAP_P1 = {
   'KeyA':      'left',
@@ -11,18 +11,14 @@ const KEY_MAP_P1 = {
   'KeyK':      'parry',
 };
 
-// P2 local-only controls (arrow keys cluster)
+// P2 local-only controls
 const KEY_MAP_P2_LOCAL = {
-  'ArrowLeft':    'left',
-  'ArrowRight':   'right',
-  'ArrowUp':      'jump',
-  'ArrowDown':    'crouch',
-  'KeyL':         'attack',
-  'Semicolon':    'parry',
-  // Legacy / numpad fallbacks
-  'Numpad0':      'attack',
-  'NumpadDecimal':'attack',
-  'Numpad1':      'attack',
+  'ArrowLeft':  'left',
+  'ArrowRight': 'right',
+  'ArrowUp':    'jump',
+  'ArrowDown':  'crouch',
+  'Numpad1':    'attack',
+  'Numpad2':    'parry',
 };
 
 export class InputManager {

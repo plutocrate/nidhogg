@@ -843,21 +843,21 @@ export class Game {
   }
 
   _localUpdatePlayers(dt, lock) {
-    const b = { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
+    const b = { left:false, right:false, jump:false, crouch:false, attack:false, parry:false };
     applyPhysics(this.p1, lock ? b : this.input.p1, dt, this.audio);
     if (this.mode === 'tutorial') this._aiUpdate(this.p2, dt);
-    else applyPhysics(this.p2, lock ? b : this.input.p2, dt, null);
+    else applyPhysics(this.p2, lock ? b : this.input.p2, dt, this.audio);
     this.p1.update(dt); this.p2.update(dt);
   }
 
   _aiUpdate(p, dt) {
     if (!p._aiMs) p._aiMs = 0;
-    if (!p._aiIn) p._aiIn = { left:false, right:false, jump:false, attack:false, crouch:false, parry:false, sprint:false };
+    if (!p._aiIn) p._aiIn = { left:false, right:false, jump:false, attack:false, crouch:false, parry:false };
     p._aiMs += dt;
     if (p._aiMs >= 380) {
       p._aiMs = 0;
       const dx = this.p1.x - p.x, dist = Math.abs(dx);
-      p._aiIn = { left:false, right:false, jump:false, attack:false, crouch:false, parry:false, sprint:false };
+      p._aiIn = { left:false, right:false, jump:false, attack:false, crouch:false, parry:false };
       if (dist > 160)     { dx > 0 ? (p._aiIn.right = true) : (p._aiIn.left = true); }
       else if (dist > 70) { if (Math.random() < .4) p._aiIn.attack = true; }
       else                { if (Math.random() < .6) p._aiIn.attack = true; else dx > 0 ? (p._aiIn.left = true) : (p._aiIn.right = true); }
