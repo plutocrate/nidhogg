@@ -118,7 +118,7 @@ const PARRY_HB = {
 const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 900, light: 750 };
 
-const BROADCAST_MS = 20;
+const BROADCAST_MS = 0;  // broadcast every tick (60 Hz) — bandwidth is tiny for this game
 
 // ── Server Player ─────────────────────────────────────────────────────────────
 class SPlayer {
@@ -251,8 +251,10 @@ class SPlayer {
       alive: this.alive, dead: this.dead,
       deadX: this.deadX, deadY: this.deadY,
       deadAngle: this.deadAngle, deadTimer: this.deadTimer,
-      attacking: this.attacking, crouching: this.crouching,
-      parrying: this.parrying, sprinting: this.sprinting,
+      attacking: this.attacking, attackTimer: this.attackTimer,
+      crouching: this.crouching,
+      parrying: this.parrying, parryTimer: this.parryTimer,
+      sprinting: this.sprinting,
       anim: this.anim, score: this.score,
     };
   }
