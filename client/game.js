@@ -2,6 +2,7 @@
 import { InputManager } from './input.js';
 import { AudioManager }  from './audio.js';
 
+//updated
 // ── Constants (must mirror server exactly) ────────────────────────────────────
 const WORLD_W     = 3200;
 const FLOOR_Y     = 460;
