@@ -56,7 +56,7 @@ const DEFS = {
     src: 'assets/HeavyBandit.png', fw: 48, fh: 48,
     anims: {
       idle:   { row:0, frames:[0],               fps:4,  loop:true  },
-      walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:9,  loop:true  },
+      walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:27, loop:true  },
       run:    { row:1, frames:[0,1,2,3,4,5,6,7], fps:13, loop:true  },
       sprint: { row:1, frames:[0,1,2,3,4,5,6,7], fps:18, loop:true  },
       jump:   { row:2, frames:[0],               fps:4,  loop:true  },
@@ -70,7 +70,7 @@ const DEFS = {
     src: 'assets/LightBandit.png', fw: 48, fh: 48,
     anims: {
       idle:   { row:0, frames:[0],               fps:4,  loop:true  },
-      walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:9,  loop:true  },
+      walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:27, loop:true  },
       run:    { row:1, frames:[0,1,2,3,4,5,6,7], fps:13, loop:true  },
       sprint: { row:1, frames:[0,1,2,3,4,5,6,7], fps:18, loop:true  },
       jump:   { row:2, frames:[0],               fps:4,  loop:true  },
