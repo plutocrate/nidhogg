@@ -174,7 +174,6 @@ class Player {
     this.parrying = s.parrying || false;
     this.sprinting = s.sprinting || false;
     this.anim = s.anim; this.score = s.score;
-    // Sync timers — needed for attack box growth in debug overlay + correct extrapolation
     if (s.attackTimer != null) this.attackTimer = s.attackTimer;
     if (s.parryTimer  != null) this.parryTimer  = s.parryTimer;
     this.sprite.flipX = s.facingRight;
@@ -184,16 +183,9 @@ class Player {
       this.deadAngle = s.deadAngle; this.deadTimer = s.deadTimer;
     } else if (this.alive) {
       const dx = s.x - this.x, dy = s.y - this.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > 200) {
-        // Large desync — hard snap
-        this.x = s.x; this.y = s.y;
-      } else if (dist > 4) {
-        // Small drift — soft correct (rubber-band gently toward server truth)
-        this.x += dx * 0.25;
-        this.y += dy * 0.25;
-      }
-      // Always trust server velocity for extrapolation baseline
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist > 200) { this.x = s.x; this.y = s.y; }
+      else if (dist > 4) { this.x += dx * 0.25; this.y += dy * 0.25; }
       this._snapX = s.x; this._snapY = s.y;
       this._snapVx = s.vx; this._snapVy = s.vy;
       this._snapAge = 0;
@@ -203,13 +195,11 @@ class Player {
   extrapolate(dt) {
     if (!this.alive || this.dead) return;
     this._snapAge += dt;
-    // Extrapolate up to 120ms (covers ~2 server ticks of lag headroom)
     const age = Math.min(this._snapAge, 120);
     const frames = age / 16.67;
     let ex = this._snapX + this._snapVx * frames;
     let ey = this._snapY + this._snapVy * frames + 0.5 * GRAVITY * frames * frames;
     if (ey > FLOOR_Y) ey = FLOOR_Y;
-    // Smooth blend: strong enough to follow quickly, not so strong it snaps
     const alpha = Math.min(1, dt / 40);
     this.x += (ex - this.x) * alpha;
     this.y += (ey - this.y) * alpha;
@@ -582,8 +572,7 @@ export class Game {
 
   _sendInput() {
     if (!this.ws || this.ws.readyState !== 1) return;
-    const inp = this.input.p1;
-    this.ws.send(JSON.stringify({ type: 'input', input: inp }));
+    this.ws.send(JSON.stringify({ type: 'input', input: this.input.p1 }));
   }
 
   // ── Main loop ─────────────────────────────────────────────────────────────
@@ -602,21 +591,15 @@ export class Game {
 
     if (this.mode === 'online') {
       if (this.state === 'playing' || this.state === 'countdown') this._sendInput();
-
-      // LOCAL player: run full physics prediction for zero-latency feel
-      if (this.state === 'playing') {
-        this._predictLocalPlayer(dt);
-      }
-
-      // OPPONENT: extrapolate position from last server snapshot
+      // Local player: predict immediately from input (zero latency feel)
+      if (this.state === 'playing') this._predictLocal(dt);
+      // Opponent: extrapolate from last server snap
       const opp = this.myPid === 1 ? this.p2 : this.p1;
       opp.extrapolate(raw);
       opp.update(dt);
-
-      // Local player sprite still needs sprite.update (prediction handles physics above)
+      // Local player sprite still needs frame advance
       const me = this.myPid === 1 ? this.p1 : this.p2;
       me.sprite.update(dt);
-
       if (this.msg) this.msg.age += raw;
       if (this.state === 'round_end' && this.msg && this.msg.age > 2400) this.msg = null;
       if (this.state !== 'waiting') this.cam.update(this.p1, this.p2, raw);
@@ -665,69 +648,46 @@ export class Game {
     }
   }
 
-  // ── Client-side prediction for the LOCAL player ───────────────────────────
-  // We run our own input through local physics every frame so movement feels
-  // instant (Krunker-style). Server snapshots then correct us if we drift.
-  _predictLocalPlayer(dt) {
-    const me = this.myPid === 1 ? this.p1 : this.p2;
+  _predictLocal(dt) {
+    const me  = this.myPid === 1 ? this.p1 : this.p2;
     const inp = this.input.p1;
     if (!me.alive || me.dead) return;
-
     const prevGrounded = me.grounded;
-
-    me.attackCd  = Math.max(0, me.attackCd  - dt);
-    me.parryCd   = Math.max(0, me.parryCd   - dt);
+    me.attackCd   = Math.max(0, me.attackCd   - dt);
+    me.parryCd    = Math.max(0, me.parryCd    - dt);
     me.parryTimer = Math.max(0, me.parryTimer - dt);
-
     const canSprint = inp.sprint && me.grounded && !me.attacking && !me.parrying;
     me.sprinting = canSprint;
     const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
-
     me.vx = 0;
     if (inp.left)  { me.vx = -speed; me.facingRight = false; }
     if (inp.right) { me.vx =  speed; me.facingRight = true;  }
-
     me.crouching = !!(inp.crouch && me.grounded && !me.sprinting);
     if (me.crouching) me.vx = 0;
-
     if (inp.parry && me.grounded && !me.attacking && me.parryCd <= 0 && me.parryTimer <= 0) {
-      me.parrying   = true;
-      me.parryTimer = PARRY_DUR;
-      me.parryCd    = PARRY_CD;
+      me.parrying = true; me.parryTimer = PARRY_DUR; me.parryCd = PARRY_CD;
     }
     if (me.parryTimer <= 0) me.parrying = false;
-
-    if (inp.jump && me.grounded) {
-      me.vy = JUMP_VEL; me.grounded = false;
-      this.audio.playJump();
-    }
+    if (inp.jump && me.grounded) { me.vy = JUMP_VEL; me.grounded = false; this.audio.playJump(); }
     if (!me.grounded) me.vy += GRAVITY;
     me.x += me.vx; me.y += me.vy;
-
     if (me.y >= FLOOR_Y) {
       me.y = FLOOR_Y; me.vy = 0; me.grounded = true;
       if (!prevGrounded) this.audio.playLand();
     } else { me.grounded = false; }
-
     if (me.x < 60) me.x = 60;
     if (me.x > WORLD_W - 60) me.x = WORLD_W - 60;
-
     if (inp.attack && me.attackCd <= 0 && !me.attacking && !me.parrying) {
       me.attacking = true; me.attackTimer = 0; me.attackCd = ATTACK_CD;
       me.sprite.play('attack', true);
-      this.audio.playSwordSwing();
-      this.audio.playAttackGrunt();
+      this.audio.playSwordSwing(); this.audio.playAttackGrunt();
     }
     if (me.attacking) {
       me.attackTimer += dt;
       if (me.attackTimer >= ATTACK_DUR[me.key]) { me.attacking = false; me.attackTimer = 0; }
     }
-
-    // Walk audio
     const moving = Math.abs(me.vx) > 0.1;
     this.audio.tickWalk(moving, me.grounded, me.sprinting);
-
-    // Animation
     me.sprite.flipX = me.facingRight;
     if      (me.attacking)  me.sprite.play('attack');
     else if (me.parrying)   me.sprite.play('parry');
@@ -737,6 +697,8 @@ export class Game {
     else if (moving)        me.sprite.play('walk');
     else                    me.sprite.play('idle');
   }
+
+  _localUpdatePlayers(dt, lock) {
     const b = { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
     this._localPhysics(this.p1, dt, lock ? b : this.input.p1);
     if (this.mode === 'tutorial') this._aiUpdate(this.p2, dt);

@@ -118,7 +118,7 @@ const PARRY_HB = {
 const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 900, light: 750 };
 
-const BROADCAST_MS = 0;  // broadcast every tick (60 Hz) — bandwidth is tiny for this game
+const BROADCAST_MS = 0;  // broadcast every tick (60 Hz)
 
 // ── Server Player ─────────────────────────────────────────────────────────────
 class SPlayer {
