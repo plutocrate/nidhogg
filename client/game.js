@@ -607,10 +607,12 @@ export class Game {
         const p2hit = this._localHit(this.p2, this.p1);
         if (p1hit === 'parried') {
           this.audio.playParry();
+          this._localParryKnockback(this.p1, this.p2);
         } else if (p1hit) {
           this._localKill(this.p1, this.p2); this.hitDone = true;
         } else if (p2hit === 'parried') {
           this.audio.playParry();
+          this._localParryKnockback(this.p2, this.p1);
         } else if (p2hit) {
           this._localKill(this.p2, this.p1); this.hitDone = true;
         }
@@ -741,25 +743,50 @@ export class Game {
     const hbD  = HB[def.key];
     const yOff = def.crouching ? hbD.hh * 0.3 : 0;
 
-    // Check if tip hits defender's body box
+    // ── PARRY CHECK FIRST (before body hit) ──────────────────────────────────
+    // The parry box is checked before the body box — if defender is parrying
+    // and facing the attacker, ANY tip that reaches their front half is blocked.
+    // Previously the body check ran first, meaning tip-in-body always killed
+    // even while parrying (parry box was inside the large body box).
+    if (def.parrying) {
+      // Defender must be facing toward the attacker to block
+      const defFacingAtk = (def.facingRight && atk.x > def.x) ||
+                           (!def.facingRight && atk.x < def.x);
+      if (defFacingAtk) {
+        const phb    = PARRY_HB[def.key];
+        // Parry box: extends forward from body edge
+        const pLeft  = def.x + (def.facingRight ? -hbD.hw - phb.fw : -hbD.hw - phb.fw);
+        const pRight = def.x + (def.facingRight ?  hbD.hw + phb.fw :  hbD.hw + phb.fw);
+        const pTop   = def.y - hbD.hh * 0.85;
+        const pBot   = def.y - hbD.hh * 0.05;
+        if (tipX >= pLeft && tipX <= pRight && tipY >= pTop && tipY <= pBot) {
+          return 'parried';
+        }
+      }
+    }
+
+    // ── BODY HIT CHECK ───────────────────────────────────────────────────────
     const bodyHit = tipX >= def.x - hbD.hw && tipX <= def.x + hbD.hw &&
                     tipY >= def.y - hbD.hh + yOff && tipY <= def.y;
     if (!bodyHit) return false;
 
-    // Check if tip hits parry box (defender parrying and tip in front)
-    if (def.parrying) {
-      const phb  = PARRY_HB[def.key];
-      const ddir = def.facingRight ? 1 : -1;
-      const pLeft  = def.x + (def.facingRight ? hbD.hw : -(hbD.hw + phb.fw));
-      const pRight = pLeft + phb.fw;
-      const pTop   = def.y - hbD.hh * 0.5 - phb.fh / 2;
-      const pBot   = pTop + phb.fh;
-      if (tipX >= pLeft && tipX <= pRight && tipY >= pTop && tipY <= pBot) {
-        return 'parried';
-      }
-    }
-
     return true;
+  }
+
+  // Push attacker backward when their attack is parried.
+  // atk = the one whose attack was blocked, def = the one who parried.
+  _localParryKnockback(atk, def) {
+    // Direction attacker was moving (away from defender)
+    const pushDir = atk.facingRight ? -1 : 1;
+    atk.vx = pushDir * 14;        // strong horizontal push
+    atk.vy = -5;                  // small upward pop
+    atk.grounded = false;
+    atk.attacking = false;        // cancel their attack
+    atk.attackTimer = 0;
+    atk.attackCd = ATTACK_CD;    // full cooldown so they can't instantly retaliate
+    // Slight shake + spark
+    this.shake.hit(6);
+    this.fx.blood(def.x + (def.facingRight ? 30 : -30), def.y - 60, pushDir);
   }
 
   _localKill(atk, def) {

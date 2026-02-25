@@ -81,16 +81,22 @@ export class AudioManager {
   _buildSynths() {
     const T = this._T;
 
-    // ── JUMP — short, airy whoosh upward
-    // MetalSynth gives a sharp percussive ping with a rising frequency
-    this._jumpSynth = new T.MetalSynth({
-      frequency    : 260,
-      envelope     : { attack: 0.001, decay: 0.12, release: 0.05 },
-      harmonicity  : 5.1,
-      modulationIndex: 16,
-      resonance    : 2800,
-      octaves      : 1.8,
-      volume       : -14,
+    // ── JUMP — soft airy whoosh: filtered noise + gentle rising sine
+    // Two layers: a breathy noise burst (the "whoosh") + a short rising tone (the "lift")
+    this._jumpNoise = new T.NoiseSynth({
+      noise        : { type: 'pink' },
+      envelope     : { attack: 0.01, decay: 0.14, sustain: 0, release: 0.06 },
+      volume       : -22,
+    });
+    // High-pass filter so only the airy top-end of the noise comes through
+    this._jumpFilter = new T.Filter(900, 'highpass').toDestination();
+    this._jumpNoise.connect(this._jumpFilter);
+
+    // Gentle rising sine — gives a sense of "lift" without metallic ping
+    this._jumpTone = new T.Synth({
+      oscillator : { type: 'sine' },
+      envelope   : { attack: 0.01, decay: 0.18, sustain: 0, release: 0.08 },
+      volume     : -26,
     }).toDestination();
 
     // ── LAND — thump on touchdown
@@ -194,9 +200,13 @@ export class AudioManager {
   // ── PUBLIC SFX API ───────────────────────────────────────────────────────
 
   playJump() {
-    if (!this._jumpSynth) return;
+    if (!this._jumpNoise) return;
     try {
-      this._jumpSynth.triggerAttackRelease('C5', '16n');
+      const now = this._T.now();
+      // Breathy noise whoosh
+      this._jumpNoise.triggerAttackRelease('16n', now);
+      // Gentle rising tone: starts at E3, pitch-bend up via portamento
+      this._jumpTone.triggerAttackRelease('E3', '8n', now + 0.01);
     } catch (_) {}
   }
 
