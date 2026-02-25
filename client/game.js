@@ -10,7 +10,7 @@ const SPRINT_SPEED= 9.5;        // sprint is ~1.7× walk
 const JUMP_VEL    = -19;
 const GRAVITY     = 0.72;
 const ATTACK_CD   = 380;
-const PARRY_DUR   = 400;        // ms parry window stays active
+const PARRY_DUR   = 650;        // ms parry window stays active — wider window for same-frame hits
 const PARRY_CD    = 800;        // ms cooldown after parry ends
 const ROUND_DELAY = 2800;
 const MAX_ROUNDS  = 5;
@@ -33,8 +33,8 @@ const HB = {
 // Parry box: a wide shallow horizontal rectangle in front of the character
 // that blocks incoming sword tips while parrying.
 const PARRY_HB = {
-  heavy: { fw: 70, fh: 55 },   // fw = forward reach, fh = vertical span
-  light: { fw: 65, fh: 52 },
+  heavy: { fw: 125, fh: 100 },  // fw = full attack reach (hw+SWORD_REACH), fh = full body height
+  light: { fw: 115, fh: 95  },
 };
 const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 500, light: 280 };
@@ -607,12 +607,12 @@ export class Game {
         const p2hit = this._localHit(this.p2, this.p1);
         if (p1hit === 'parried') {
           this.audio.playParry();
-          this._localParryKnockback(this.p1, this.p2);
+          this._parryKnockback(this.p1, this.p2);
         } else if (p1hit) {
           this._localKill(this.p1, this.p2); this.hitDone = true;
         } else if (p2hit === 'parried') {
           this.audio.playParry();
-          this._localParryKnockback(this.p2, this.p1);
+          this._parryKnockback(this.p2, this.p1);
         } else if (p2hit) {
           this._localKill(this.p2, this.p1); this.hitDone = true;
         }
@@ -743,22 +743,21 @@ export class Game {
     const hbD  = HB[def.key];
     const yOff = def.crouching ? hbD.hh * 0.3 : 0;
 
-    // ── PARRY CHECK FIRST (before body hit) ──────────────────────────────────
-    // The parry box is checked before the body box — if defender is parrying
-    // and facing the attacker, ANY tip that reaches their front half is blocked.
-    // Previously the body check ran first, meaning tip-in-body always killed
-    // even while parrying (parry box was inside the large body box).
+    // ── PARRY CHECK FIRST — before body hit ──────────────────────────────────
+    // Critical: body box is large so parry must be evaluated first.
+    // If defender is parrying and facing the attacker, the parry box covers
+    // the full attack zone (same width as sword reach + body half).
+    // Any tip reaching the defender's front half is blocked.
     if (def.parrying) {
-      // Defender must be facing toward the attacker to block
-      const defFacingAtk = (def.facingRight && atk.x > def.x) ||
-                           (!def.facingRight && atk.x < def.x);
-      if (defFacingAtk) {
-        const phb    = PARRY_HB[def.key];
-        // Parry box: extends forward from body edge
-        const pLeft  = def.x + (def.facingRight ? -hbD.hw - phb.fw : -hbD.hw - phb.fw);
-        const pRight = def.x + (def.facingRight ?  hbD.hw + phb.fw :  hbD.hw + phb.fw);
-        const pTop   = def.y - hbD.hh * 0.85;
-        const pBot   = def.y - hbD.hh * 0.05;
+      const facingAtk = (def.facingRight && atk.x >= def.x) ||
+                        (!def.facingRight && atk.x <= def.x);
+      if (facingAtk) {
+        const phb   = PARRY_HB[def.key];
+        // Parry box spans the full forward zone: from body-centre outward fw pixels
+        const pLeft  = def.facingRight ? def.x - phb.fw : def.x - phb.fw;
+        const pRight = def.facingRight ? def.x + phb.fw : def.x + phb.fw;
+        const pTop   = def.y - hbD.hh;       // top of body
+        const pBot   = def.y;                 // feet
         if (tipX >= pLeft && tipX <= pRight && tipY >= pTop && tipY <= pBot) {
           return 'parried';
         }
@@ -773,20 +772,38 @@ export class Game {
     return true;
   }
 
-  // Push attacker backward when their attack is parried.
-  // atk = the one whose attack was blocked, def = the one who parried.
-  _localParryKnockback(atk, def) {
-    // Direction attacker was moving (away from defender)
-    const pushDir = atk.facingRight ? -1 : 1;
-    atk.vx = pushDir * 14;        // strong horizontal push
-    atk.vy = -5;                  // small upward pop
-    atk.grounded = false;
-    atk.attacking = false;        // cancel their attack
+  // Attacker (atk) had their attack blocked by defender (def) parrying.
+  // Push atk away — no blood, no kill. Spark effect at contact point only.
+  _parryKnockback(atk, def) {
+    const pushDir = atk.facingRight ? -1 : 1;   // push attacker backward
+    atk.vx        = pushDir * 16;               // strong horizontal push
+    atk.vy        = -6;                         // small upward pop
+    atk.grounded  = false;
+    atk.attacking  = false;                     // cancel attack immediately
     atk.attackTimer = 0;
-    atk.attackCd = ATTACK_CD;    // full cooldown so they can't instantly retaliate
-    // Slight shake + spark
-    this.shake.hit(6);
-    this.fx.blood(def.x + (def.facingRight ? 30 : -30), def.y - 60, pushDir);
+    atk.attackCd   = ATTACK_CD;                 // full cooldown — no instant retry
+    this.shake.hit(5);
+    // Spark particles at sword-clash point — cyan, NOT blood red
+    const clashX = def.x + (def.facingRight ? 40 : -40);
+    const clashY = def.y - HB[def.key].hh * 0.6;
+    this._clashSpark(clashX, clashY);
+  }
+
+  // Small cyan spark burst — distinct from blood, signals a block
+  _clashSpark(x, y) {
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.4;
+      const s = 3 + Math.random() * 6;
+      this.fx.p.push({
+        x, y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s - 1,
+        life: 1,
+        decay: 0.045 + Math.random() * 0.03,
+        r: 1.5 + Math.random() * 2,
+        col: `hsl(${175 + Math.random() * 30}, 90%, ${60 + Math.random() * 20}%)`,
+      });
+    }
   }
 
   _localKill(atk, def) {
