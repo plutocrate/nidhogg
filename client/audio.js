@@ -286,6 +286,16 @@ export class AudioManager {
     this._walkLoop.stop();
   }
 
+  // ── RESUME ──────────────────────────────────────────────────────────────
+  // Browsers auto-suspend AudioContext after ~30s of silence.
+  // The host creates a room, waits (no sound), then the game starts without
+  // a new user gesture — context is suspended but initialized=true so
+  // preloadAll() is skipped. resume() re-wakes it without rebuilding synths.
+  async resume() {
+    if (!this._T) return; // not yet initialized — preloadAll() will handle it
+    try { await this._T.start(); } catch (_) {}
+  }
+
   // ── COMPAT STUBS ────────────────────────────────────────────────────────
   async init()      {}
   async initAudio() {}

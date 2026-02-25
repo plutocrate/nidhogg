@@ -550,6 +550,10 @@ export class Game {
     // Ensure audio is unlocked — preloadAll() is idempotent
     if (!this.audio.initialized) {
       this.audio.preloadAll().catch(() => {});
+    } else {
+      // AudioContext may have auto-suspended (e.g. host waited in lobby with no sound).
+      // resume() re-wakes it without rebuilding synths — no latency cost.
+      this.audio.resume().catch(() => {});
     }
     this._hitboxKey = (e) => { if (e.code === 'Backslash') this._showHitboxes = !this._showHitboxes; };
     window.addEventListener('keydown', this._hitboxKey);
