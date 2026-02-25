@@ -94,10 +94,10 @@ const MOVE_SPEED  = 5.5;
 const SPRINT_SPEED= 9.5;
 const JUMP_VEL    = -19;
 const GRAVITY     = 0.72;
-const ATTACK_CD   = 480;
-const ATTACK_GROW_MS = 700;
-const PARRY_DUR   = 650;     // ms parry window active
-const PARRY_CD    = 800;     // ms cooldown after parry
+const ATTACK_CD      = 480;
+const PARRY_DUR      = 650;     // ms parry window active
+const PARRY_CD       = 800;     // ms cooldown after parry
+const ATTACK_GROW_MS = 350;     // ms to reach full sword reach
 const TICK_MS     = 1000 / 60;
 const ROUND_DELAY = 2800;
 const MAX_ROUNDS  = 5;
@@ -140,7 +140,6 @@ class SPlayer {
   swordTip() {
     const dir      = this.facingRight ? 1 : -1;
     const hb       = HB[this.char];
-    // Reach grows 0 → SWORD_REACH over ATTACK_GROW_MS (same formula as client)
     const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
     const curReach = this.attacking ? SWORD_REACH[this.char] * growFrac : SWORD_REACH[this.char];
     return {
@@ -158,14 +157,15 @@ class SPlayer {
     };
   }
 
-  // Parry box — centred on body, fw in each direction. Instant full size.
-  // Mirrors _localHit() parry check on the client exactly.
+  // Parry box: front-side only, from body edge outward by fw. Instant full size.
   parryBox() {
     const hb  = HB[this.char];
     const phb = PARRY_HB[this.char];
+    const pLeft  = this.facingRight ? this.x + hb.hw          : this.x - hb.hw - phb.fw;
+    const pRight = this.facingRight ? this.x + hb.hw + phb.fw : this.x - hb.hw;
     return {
-      left:   this.x - phb.fw,
-      right:  this.x + phb.fw,
+      left:   pLeft,
+      right:  pRight,
       top:    this.y - hb.hh * 0.85,
       bottom: this.y - hb.hh * 0.15,
     };
@@ -351,21 +351,15 @@ class Room {
     if (!atk.attacking || !atk.alive || !def.alive) return false;
     const tip = atk.swordTip();
 
-    // Parry FIRST — mirrors client _localHit() order.
-    // Defender must face the attacker to block.
+    // Parry checked FIRST — parry box is front-side only, full size instantly.
     if (def.parrying) {
-      const facingAtk = (def.facingRight  && atk.x >= def.x) ||
-                        (!def.facingRight && atk.x <= def.x);
-      if (facingAtk) {
-        const pb = def.parryBox();
-        if (tip.x >= pb.left && tip.x <= pb.right &&
-            tip.y >= pb.top  && tip.y <= pb.bottom) {
-          return 'parried';
-        }
+      const pb = def.parryBox();
+      if (tip.x >= pb.left && tip.x <= pb.right &&
+          tip.y >= pb.top  && tip.y <= pb.bottom) {
+        return 'parried';
       }
     }
 
-    // Body hit
     const box = def.bodyBox();
     const bodyHit = tip.x >= box.left && tip.x <= box.right &&
                     tip.y >= box.top  && tip.y <= box.bottom;
