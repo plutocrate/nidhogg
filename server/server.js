@@ -461,4 +461,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Bandit Duel  http://localhost:${PORT}`));
+httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Bandit Duel ${PORT}`));
