@@ -373,6 +373,8 @@ class RemotePlayer {
     // Track previous anim/action state for triggering SFX
     this._prevAttacking = false;
     this._prevAnim      = 'idle';
+    this._prevGrounded  = true;   // for jump SFX detection
+    this._prevMoving    = false;  // for walk loop management
   }
 
   // ── Called when a new server snapshot arrives ─────────────────────────────
@@ -468,25 +470,39 @@ class RemotePlayer {
     this._syncAnimState(snap, audio);
   }
 
-  // Detect state transitions and trigger appropriate SFX on the remote player
+  // Detect state transitions and trigger appropriate SFX on the remote player.
+  // All audio is derived locally from state changes — nothing is sent over the
+  // network.  We infer events by comparing current snap to previous frame's state.
   _syncAnimState(snap, audio) {
     const wasAttacking = this._prevAttacking;
+    const wasGrounded  = this._prevGrounded;
     this.attacking  = snap.attacking;
     this.crouching  = snap.crouching;
     this.score      = snap.score;
     this.anim       = snap.anim;
+    const isMoving  = Math.abs(snap.vx) > 0.1 && snap.grounded;
 
-    // ── AUDIO: fire SFX locally based on remote state transitions ────────────
-    // (No audio data is sent over the network — we infer from state changes)
     if (audio) {
+      // ── Attack swing: false→true transition ────────────────────────────────
       if (!wasAttacking && snap.attacking) {
-        // Remote player just started attacking
         audio.playSwordSwing();
         audio.playAttackGrunt();
       }
+
+      // ── Jump: was grounded, now airborne ───────────────────────────────────
+      // Only fire when the player leaves the ground (not while already in air)
+      if (wasGrounded && !snap.grounded) {
+        audio.playJump();
+      }
+
+      // ── Walk loop: start/stop based on movement + grounded state ───────────
+      // tickWalk() manages the looping node internally; safe to call every frame
+      audio.tickWalk(isMoving, snap.grounded);
     }
 
     this._prevAttacking = snap.attacking;
+    this._prevGrounded  = snap.grounded;
+    this._prevMoving    = isMoving;
     this._prevAnim      = snap.anim;
 
     // Sync sprite
@@ -787,10 +803,10 @@ export class Game {
 
   start() {
     this.running = true;
+    // Initialize audio on start — only needs a gesture context which the
+    // menu/lobby already provided.  No BGM to start; SFX are pre-synthesized.
     if (!this.audio.initialized) {
-      this.audio.init().then(() => this.audio.startAmbience()).catch(() => {});
-    } else {
-      this.audio.startAmbience();
+      this.audio.init().catch(() => {});
     }
     this._last = performance.now();
     this._raf  = requestAnimationFrame(this._tickFn);
@@ -805,7 +821,8 @@ export class Game {
   stop() {
     this.running = false;
     if (this._raf){ cancelAnimationFrame(this._raf); this._raf=null; }
-    this.audio.stopAmbience();
+    // Stop walk loop if it was running when game ended
+    if (this.audio.initialized) this.audio.tickWalk(false, false);
     this.input.destroy();
     if (this.ws){ try{this.ws.close();}catch(e){} this.ws=null; }
     if (this._debugKey) window.removeEventListener('keydown', this._debugKey);
@@ -975,11 +992,19 @@ export class Game {
     if (this.myPlayer && this.myPlayer.alive && !this.myPlayer.dead) {
       const inp = this.input.p1;
 
-      // Trigger SFX locally (attack start)
+      // ── LOCAL PLAYER AUDIO — fire on input, not on server response ─────────
+      // Attack swing: trigger the moment the attack button is pressed
       if (inp.attack && this.myPlayer.attackCd <= 0 && !this.myPlayer.attacking) {
         this.audio.playSwordSwing();
         this.audio.playAttackGrunt();
       }
+      // Jump: trigger the instant jump is pressed while grounded
+      if (inp.jump && this.myPlayer.grounded) {
+        this.audio.playJump();
+      }
+      // Walk loop: keep in sync with predicted movement state
+      const localMoving = (inp.left || inp.right) && !inp.crouch && this.myPlayer.grounded;
+      this.audio.tickWalk(localMoving, this.myPlayer.grounded);
 
       // Run prediction step and get sequence number
       const seq = this.myPlayer.predictStep(inp, dt);
@@ -1053,6 +1078,13 @@ export class Game {
     if(this.mode==='tutorial') this._aiUpdate(this.p2,dt);
     else this._localPhysics(this.p2, dt, lock?b:this.input.p2);
     this.p1.update(dt); this.p2.update(dt);
+    // In local 2-player, both players share one walk loop channel —
+    // play if either human player is moving on ground.
+    if(this.mode==='local' && !lock) {
+      const anyWalking = (Math.abs(this.p1.vx)>0.1 && this.p1.grounded)
+                      || (Math.abs(this.p2.vx)>0.1 && this.p2.grounded);
+      this.audio.tickWalk(anyWalking, true);
+    }
   }
 
   _localPhysics(p, dt, inp) {
@@ -1064,11 +1096,16 @@ export class Game {
     if(inp.right){p.vx=MOVE_SPEED;p.facingRight=true;}
     p.crouching=!!(inp.crouch&&p.grounded);
     if(p.crouching)p.vx=0;
+
+    // ── Audio: jump ─────────────────────────────────────────────────────────
+    // Fire the instant grounded+jump is pressed, before physics updates y.
+    const wasGrounded = p.grounded;
     if(inp.jump&&p.grounded){p.vy=JUMP_VEL;p.grounded=false;}
     if(!p.grounded)p.vy+=GRAVITY;
     p.x+=p.vx;p.y+=p.vy;
     if(p.y>=FLOOR_Y){p.y=FLOOR_Y;p.vy=0;p.grounded=true;}else{p.grounded=false;}
     if(p.x<60)p.x=60; if(p.x>WORLD_W-60)p.x=WORLD_W-60;
+
     if(inp.attack&&p.attackCd<=0&&!p.attacking){
       p.attacking=true;p.attackTimer=0;p.attackCd=ATTACK_CD;
       p.sprite.play('attack',true);
@@ -1084,6 +1121,20 @@ export class Game {
     else if(!p.grounded)p.sprite.play('jump');
     else if(Math.abs(p.vx)>.1)p.sprite.play('run');
     else p.sprite.play('idle');
+
+    // ── Audio: jump SFX (grounded→airborne) ────────────────────────────────
+    if(wasGrounded && inp.jump) this.audio.playJump();
+
+    // ── Audio: walk loop — only for human-controlled players in non-local modes
+    // In 'local' 2-player mode _localUpdatePlayers() drives tickWalk instead,
+    // combining both players so only one loop node is needed.
+    if(this.mode !== 'local') {
+      const isHuman  = !(this.mode === 'tutorial' && p.id === 2);
+      if(isHuman) {
+        const isMoving = Math.abs(p.vx) > 0.1 && p.grounded;
+        this.audio.tickWalk(isMoving, p.grounded);
+      }
+    }
   }
 
   _aiUpdate(p, dt) {
