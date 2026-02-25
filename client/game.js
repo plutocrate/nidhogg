@@ -38,9 +38,11 @@ const CAM_ZOOM_MIN = 0.38;
 const CAM_DIST_MIN = 250;
 const CAM_DIST_MAX = 1600;
 
-// How many ms of opponent snapshots to buffer for interpolation
-// We render at INTERP_DELAY ms behind the leading edge → smooth even at 50Hz
-const INTERP_DELAY = 100;
+// Opponent interpolation delay — render remote player this many ms behind
+// so we always have two snapshots to interpolate between.
+// 50ms is enough for sub-80ms ping; increase to 100 for high-latency connections.
+// The host player (myPid === 1) experiences ZERO extra delay on themselves.
+const INTERP_DELAY = 60;
 
 // ── Asset preload ─────────────────────────────────────────────────────────────
 const IMG_CACHE = {};
@@ -292,7 +294,7 @@ class Camera {
 }
 
 // ── HUD ───────────────────────────────────────────────────────────────────────
-function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
+function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid, rtt) {
   const w = VW, h = VH;
   ctx.save(); ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
 
@@ -308,6 +310,14 @@ function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
   ctx.textAlign = 'center'; ctx.font = 'bold 12px "Courier New"';
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
   ctx.fillText(`ROUND ${round} / ${maxR}`, w / 2, 16);
+
+  // RTT indicator (online only)
+  if (rtt != null) {
+    const col = rtt < 60 ? '#44ff88' : rtt < 120 ? '#ffdd44' : '#ff4444';
+    ctx.textAlign = 'right'; ctx.font = '10px "Courier New"';
+    ctx.fillStyle = col;
+    ctx.fillText(`${rtt}ms`, w - 8, h - 8);
+  }
 
   const PW = 14, PH = 10, PG = 5, rowW = maxR * (PW + PG) - PG, rx = w / 2 - rowW / 2, ry = 22;
   for (let i = 0; i < maxR; i++) {
@@ -336,12 +346,10 @@ function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
   ctx.restore();
 }
 
-// Server tick dt — must match server's TICK_MS exactly for deterministic replay
+// Server tick dt — must match server TICK_MS exactly for deterministic CSP replay
 const SERVER_DT = 1000 / 60;
 
-// ── Physics function (shared by CSP and local modes) ─────────────────────────
-// Pure function: takes player state + input + dt → mutates player state
-// Keeping this as a standalone fn makes CSP replay trivial.
+// ── Physics (shared: CSP + local) ─────────────────────────────────────────────
 function applyPhysics(p, inp, dt, audio) {
   if (p.dead || !p.alive) return;
 
@@ -392,7 +400,6 @@ function applyPhysics(p, inp, dt, audio) {
     if (p.attackTimer >= ATTACK_DUR[p.key]) { p.attacking = false; p.attackTimer = 0; }
   }
 
-  // Animation
   p.sprite.flipX = p.facingRight;
   const moving = Math.abs(p.vx) > 0.1;
   if      (p.attacking)  p.sprite.play('attack');
@@ -407,42 +414,33 @@ function applyPhysics(p, inp, dt, audio) {
 }
 
 // ── Opponent snapshot buffer (for interpolation) ──────────────────────────────
-// Stores timestamped snapshots of the opponent from server updates.
-// We render the opponent at (now - INTERP_DELAY) by interpolating between
-// the two snapshots that bracket that target time.
 class SnapBuffer {
   constructor() {
-    this.buf = [];        // { t, snap }  — sorted ascending by t
-    this.renderSnap = null;  // what we're actually rendering this frame
+    this.buf = [];
+    this.renderSnap = null;
   }
 
   push(snap) {
     const t = performance.now();
     this.buf.push({ t, snap });
-    // Keep only last 600ms of history — enough for any reasonable jitter
     const cutoff = t - 600;
     while (this.buf.length > 2 && this.buf[0].t < cutoff) this.buf.shift();
   }
 
-  // Returns interpolated snapshot for renderTime = now - INTERP_DELAY
-  // Returns null if not enough data yet
   getInterpolated() {
     if (this.buf.length === 0) return null;
     const targetT = performance.now() - INTERP_DELAY;
 
-    // If all snaps are newer than targetT (startup), use oldest
     if (this.buf[0].t >= targetT) return this.buf[0].snap;
 
-    // Find the two snaps that bracket targetT
     let a = this.buf[0], b = this.buf[0];
     for (let i = 1; i < this.buf.length; i++) {
       if (this.buf[i].t <= targetT) { a = this.buf[i]; }
       else { b = this.buf[i]; break; }
     }
 
-    if (a === b) return a.snap;  // at or past latest snap
+    if (a === b) return a.snap;
 
-    // Linear interpolation between a and b
     const span = b.t - a.t;
     const t    = span > 0 ? (targetT - a.t) / span : 0;
     const s    = a.snap, e = b.snap;
@@ -489,14 +487,18 @@ export class Game {
     this._tickFn = this._tick.bind(this);
     this._last   = 0;
     this.ws      = opts.socket || null;
+    this.rtt     = null;  // measured RTT from server pings
 
     // ── Online-mode networking state ──────────────────────────────────────────
-    // CSP: input sequence counter + ring buffer of unacknowledged inputs
     this._seq        = 0;
-    this._inputHist  = [];   // { seq, inp, dt } — inputs not yet ack'd by server
-    // Opponent interpolation buffer
+    this._inputHist  = [];   // unacked input history for CSP replay
     this._oppBuf     = new SnapBuffer();
-    // Last sent input (for dedup — we only send when input changes)
+
+    // Previous input state for dedup — but we only dedup HELD keys, never
+    // suppress edge-triggered actions (attack/jump/parry).
+    // This is the key fix: previously the game dropped inputs if stateKey
+    // matched last sent key, causing missed attacks.
+    this._lastSentMovement = '';
   }
 
   _spawn(s1, s2) {
@@ -506,7 +508,6 @@ export class Game {
     this.p1.facingRight = true;  this.p1.sprite.flipX = true;
     this.p2.facingRight = false; this.p2.sprite.flipX = false;
     this.cam = new Camera();
-    // Reset networking buffers on new round
     this._seq = 0; this._inputHist = []; this._oppBuf = new SnapBuffer();
   }
 
@@ -550,8 +551,17 @@ export class Game {
   _onMsg(msg) {
     switch (msg.type) {
 
+      case 'ping':
+        // Server wants RTT measurement — pong immediately
+        if (this.ws && this.ws.readyState === 1)
+          this.ws.send(JSON.stringify({ type: 'pong', ts: msg.ts }));
+        break;
+
+      case 'rtt':
+        this.rtt = msg.rtt;
+        break;
+
       case 'state': {
-        // Update game state
         if (msg.state && this.state !== 'round_end' && this.state !== 'game_over')
           this.state = msg.state;
         if ((msg.state === 'countdown' || msg.state === 'playing') && this.msg && this.state !== 'game_over')
@@ -563,22 +573,18 @@ export class Game {
         const me  = msg.me;
         const opp = msg.opp;
 
-        // ── Opponent: push raw server snapshot into interpolation buffer ──────
+        // ── Opponent: push into interpolation buffer ──────────────────────────
         if (opp) {
           this._oppBuf.push(opp);
-          // Mirror score onto opponent player object immediately
           const oppPlayer = this.myPid === 1 ? this.p2 : this.p1;
           if (opp.score != null) oppPlayer.score = opp.score;
         }
 
-        // ── Local player: server reconciliation ───────────────────────────────
+        // ── Local player: server reconciliation (CSP) ─────────────────────────
         if (me && me.seq != null) {
           const myPlayer = this.myPid === 1 ? this.p1 : this.p2;
 
-          // 1. Build reconciled state: start from server authoritative position,
-          //    replay all inputs the server hasn't seen yet.
-          //    We do this in a temporary object so we can compare vs current prediction.
-          //    Use a no-op sprite proxy so replay doesn't clobber the real sprite frames.
+          // Build reconciled state from server authoritative snapshot
           const dummySprite = { play(){}, update(){}, flipX: false, anim: 'idle' };
           const recon = {
             x: me.x, y: me.y, vx: me.vx, vy: me.vy,
@@ -589,22 +595,19 @@ export class Game {
             parrying: me.parrying || false, parryTimer: me.parryTimer || 0, parryCd: me.parryCd || 0,
             sprinting: me.sprinting || false, score: me.score,
             key: myPlayer.key,
-            sprite: dummySprite,  // ← dummy so replay never touches real sprite
+            sprite: dummySprite,
           };
 
-          // Discard acked inputs first
+          // Discard acked inputs
           const ackSeq = me.seq;
           this._inputHist = this._inputHist.filter(h => h.seq > ackSeq);
 
-          // Replay unacked inputs on top of server state.
-          // Use SERVER_DT (16.67ms) for each step — matches server physics exactly,
-          // so prediction and server stay in sync regardless of client framerate.
+          // Replay unacked inputs on server state
           for (const h of this._inputHist) {
             applyPhysics(recon, h.inp, SERVER_DT, null);
           }
 
-          // 2. Adopt fully-reconciled state (server base + replayed unacked inputs).
-          //    Never overwrite predicted fields from the raw server snap directly.
+          // Adopt reconciled state
           myPlayer.x           = recon.x;
           myPlayer.y           = recon.y;
           myPlayer.vx          = recon.vx;
@@ -619,7 +622,7 @@ export class Game {
           myPlayer.crouching   = recon.crouching;
           myPlayer.sprinting   = recon.sprinting;
           myPlayer.facingRight = recon.facingRight;
-          // Score/alive/dead are server-authoritative only
+          // Server-authoritative only
           myPlayer.score = me.score;
           myPlayer.alive = me.alive;
           myPlayer.dead  = me.dead;
@@ -679,12 +682,17 @@ export class Game {
 
   _sendInput(inp, seq) {
     if (!this.ws || this.ws.readyState !== 1) return;
-    // Build a key from just the button states (not seq) for dedup
-    const stateKey = `${+inp.left}${+inp.right}${+inp.jump}${+inp.crouch}${+inp.attack}${+inp.parry}${+inp.sprint}`;
-    // Always send if input changed; also send every 3 frames to keep seq advancing on server
-    const forceResend = (seq % 3 === 0);
-    if (stateKey === this._lastSentKey && !forceResend) return;
-    this._lastSentKey = stateKey;
+
+    // ── Intelligent send strategy ──────────────────────────────────────────
+    // ALWAYS send when any action button is pressed (attack/jump/parry).
+    // For pure movement, dedup by movement key (left/right/crouch/sprint) to
+    // reduce bandwidth, but still send every 4 frames to keep seq advancing.
+    const hasAction = inp.attack || inp.jump || inp.parry;
+    const moveKey = `${+inp.left}${+inp.right}${+inp.crouch}${+inp.sprint}`;
+    const forceSend = hasAction || (seq % 4 === 0) || (moveKey !== this._lastSentMovement);
+
+    if (!forceSend) return;
+    this._lastSentMovement = moveKey;
     this.ws.send(JSON.stringify({ type: 'input', input: { ...inp, seq } }));
   }
 
@@ -716,21 +724,24 @@ export class Game {
 
     if (this.state === 'playing' || this.state === 'countdown') {
       // ── CLIENT-SIDE PREDICTION ────────────────────────────────────────────
-      // Tag this frame's input with a seq number, apply locally immediately
-      // (zero latency), buffer it so reconciliation can replay it if needed.
-      const inpCopy = this.state === 'playing' ? { ...this.input.p1 }
-                    : { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
+      const inpCopy = this.state === 'playing'
+        ? { ...this.input.p1 }
+        : { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
+
       this._seq++;
-      this._inputHist.push({ seq: this._seq, inp: inpCopy, dt: raw });  // store raw dt, not slowed
-      // Hard cap: server acks within ~200ms at 50Hz = ~12 entries normally.
-      // Cap at 120 frames (~2s) as a safety net.
+      this._inputHist.push({ seq: this._seq, inp: inpCopy });
       if (this._inputHist.length > 120) this._inputHist.shift();
-      applyPhysics(me, inpCopy, SERVER_DT, this.audio);  // SERVER_DT matches server tick exactly
+
+      // Apply locally at server-matching dt for deterministic physics
+      applyPhysics(me, inpCopy, SERVER_DT, this.audio);
       me.sprite.update(dt);
-      // Always send — server needs the seq to ack reconciliation
+
+      // ALWAYS send input this frame — server needs seq for ack.
+      // Actions (attack/jump/parry) are NEVER suppressed.
       this._sendInput(inpCopy, this._seq);
     }
-    // Pull the interpolated state from 100ms ago — always smooth, never pops
+
+    // Pull interpolated opponent state
     const interpSnap = this._oppBuf.getInterpolated();
     if (interpSnap) {
       opp.x           = interpSnap.x;
@@ -748,17 +759,15 @@ export class Game {
         opp.deadX = interpSnap.deadX; opp.deadY = interpSnap.deadY;
         opp.deadAngle = interpSnap.deadAngle; opp.deadTimer = interpSnap.deadTimer;
       }
-      // Drive opponent animation from interpolated state
       opp.sprite.flipX = opp.facingRight;
       if (opp.sprite.anim !== interpSnap.anim) opp.sprite.play(interpSnap.anim);
     }
     opp.sprite.update(dt);
-    opp.update(dt);  // dead body physics
+    opp.update(dt);
 
     if (this.msg) this.msg.age += raw;
     if (this.state === 'round_end' && this.msg && this.msg.age > 2400) this.msg = null;
 
-    // Use interpolated positions for camera — always smooth
     if (this.state !== 'waiting') this.cam.update(this.p1, this.p2, raw);
   }
 
@@ -977,7 +986,8 @@ export class Game {
       ctx.restore();
     }
 
-    drawHUD(ctx, this.p1, this.p2, this.round, MAX_ROUNDS, this.state, this.msg, this.myPid);
+    drawHUD(ctx, this.p1, this.p2, this.round, MAX_ROUNDS, this.state, this.msg, this.myPid,
+            this.mode === 'online' ? this.rtt : null);
 
     if (this.mode === 'tutorial') {
       const lines = [

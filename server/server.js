@@ -1,4 +1,11 @@
-// server.js — Authoritative game server
+// server.js — Authoritative game server (Krunker-grade rewrite)
+// Key fixes:
+//   1. setInterval at exactly TICK_MS — no setImmediate spin loop burning CPU
+//   2. Per-player input QUEUE (not overwrite) — attack/jump/parry edges never dropped
+//   3. Hit detection runs every tick while attacking — hits can't be missed
+//   4. State broadcast at 60Hz — host player sees himself with zero extra lag
+//   5. Ping/RTT measurement so clients can calibrate
+
 import { fileURLToPath } from 'url';
 import { dirname, join, extname } from 'path';
 import * as http from 'http';
@@ -57,29 +64,28 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-// ── GAME CONSTANTS — must mirror client exactly ───────────────────────────────
-const WORLD_W      = 3200;
-const FLOOR_Y      = 460;
-const MOVE_SPEED   = 5.5;
-const SPRINT_SPEED = 9.5;
-const JUMP_VEL     = -19;
-const GRAVITY      = 0.72;
+// ── GAME CONSTANTS ─────────────────────────────────────────────────────────────
+const WORLD_W        = 3200;
+const FLOOR_Y        = 460;
+const MOVE_SPEED     = 5.5;
+const SPRINT_SPEED   = 9.5;
+const JUMP_VEL       = -19;
+const GRAVITY        = 0.72;
 const ATTACK_CD      = 480;
 const PARRY_DUR      = 650;
 const PARRY_CD       = 800;
 const ATTACK_GROW_MS = 350;
-const TICK_MS      = 1000 / 60;
-const ROUND_DELAY  = 2800;
-const MAX_ROUNDS   = 5;
-const MAJORITY     = 3;
-const BROADCAST_MS = 20;   // 50 Hz state broadcasts — client interpolates between them
+const TICK_MS        = 1000 / 60;   // ~16.67ms
+const ROUND_DELAY    = 2800;
+const MAX_ROUNDS     = 5;
+const MAJORITY       = 3;
 
 const HB          = { heavy: { hw: 36, hh: 115 }, light: { hw: 32, hh: 110 } };
 const PARRY_HB    = { heavy: { fw: 85, fh: 63  }, light: { fw: 78, fh: 60  } };
 const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 900, light: 750 };
 
-// ── Server Player ─────────────────────────────────────────────────────────────
+// ── Server Player ──────────────────────────────────────────────────────────────
 class SPlayer {
   constructor(id, x, char) {
     this.id = id; this.char = char;
@@ -94,15 +100,56 @@ class SPlayer {
     this.parrying  = false; this.parryTimer = 0; this.parryCd = 0;
     this.sprinting = false;
     this.score = 0; this.anim = 'idle';
-    this.lastSeq = 0;  // last input sequence number processed
+    this.lastSeq = 0;
+
+    // ── Input queue — the core of the fix ──────────────────────────────────────
+    // Continuous state (held keys): always latest value
+    this._heldInput = blank();
+    // Rising-edge queue: attack/jump/parry edges pushed here, drained each tick
+    // This means even if two network packets arrive in one 16ms window, neither
+    // attack nor jump is dropped.
+    this._edgeQueue = [];
+  }
+
+  // Network layer calls this on every received input packet
+  queueInput(input) {
+    const prev = this._heldInput;
+    // Update held state
+    this._heldInput = {
+      left:   !!input.left,
+      right:  !!input.right,
+      jump:   !!input.jump,
+      crouch: !!input.crouch,
+      attack: !!input.attack,
+      parry:  !!input.parry,
+      sprint: !!input.sprint,
+    };
+    // Push rising edges to queue (de-duped: don't push if already queued)
+    if (input.attack && !prev.attack && !this._edgeQueue.includes('attack')) this._edgeQueue.push('attack');
+    if (input.jump   && !prev.jump   && !this._edgeQueue.includes('jump'))   this._edgeQueue.push('jump');
+    if (input.parry  && !prev.parry  && !this._edgeQueue.includes('parry'))  this._edgeQueue.push('parry');
+    if (input.seq != null) this.lastSeq = input.seq;
+  }
+
+  // Called once per tick — returns the input to use this tick, drains edge queue
+  consumeInput() {
+    const inp = { ...this._heldInput };
+    if (this._edgeQueue.includes('attack')) { inp.attack = true; }
+    if (this._edgeQueue.includes('jump'))   { inp.jump   = true; }
+    if (this._edgeQueue.includes('parry'))  { inp.parry  = true; }
+    this._edgeQueue = [];
+    return inp;
   }
 
   swordTip() {
     const dir      = this.facingRight ? 1 : -1;
     const hb       = HB[this.char];
     const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
-    const reach    = this.attacking ? SWORD_REACH[this.char] * growFrac : SWORD_REACH[this.char];
-    return { x: this.x + dir * (hb.hw + reach), y: this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0) };
+    const reach    = SWORD_REACH[this.char] * growFrac;
+    return {
+      x: this.x + dir * (hb.hw + reach),
+      y: this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0),
+    };
   }
 
   bodyBox() {
@@ -138,8 +185,8 @@ class SPlayer {
     }
     if (!this.alive) return;
 
-    this.attackCd  = Math.max(0, this.attackCd  - dt);
-    this.parryCd   = Math.max(0, this.parryCd   - dt);
+    this.attackCd   = Math.max(0, this.attackCd   - dt);
+    this.parryCd    = Math.max(0, this.parryCd    - dt);
     this.parryTimer = Math.max(0, this.parryTimer - dt);
 
     const canSprint = inp.sprint && this.grounded && !this.attacking && !this.parrying;
@@ -193,25 +240,24 @@ class SPlayer {
       crouching: this.crouching,
       parrying: this.parrying, parryTimer: this.parryTimer, parryCd: this.parryCd,
       sprinting: this.sprinting, anim: this.anim, score: this.score,
-      seq: this.lastSeq,  // ← reconciliation anchor for client-side prediction
+      seq: this.lastSeq,
     };
   }
 }
 
-// ── Room ──────────────────────────────────────────────────────────────────────
+// ── Room ───────────────────────────────────────────────────────────────────────
 class Room {
   constructor(code) {
     this.code = code; this.clients = [];
-    this.inputs = { 1: blank(), 2: blank() };
     this.p1 = null; this.p2 = null;
     this.state = 'waiting'; this.round = 1;
     this.cdVal = 3; this.cdMs = 0; this.roundMs = 0; this.hitDone = false;
-    this._timer = null; this._running = false;
-    this._lastTick = 0; this._lastBroadcast = 0;
+    this._interval = null; this._running = false;
+    this._lastTick = 0; this._acc = 0;
   }
 
   addClient(ws, pid) {
-    this.clients.push({ ws, pid });
+    this.clients.push({ ws, pid, rtt: 0, _pingTs: 0 });
     ws.send(pack({ type: 'assign', pid, code: this.code }));
     if (this.clients.length === 2) this._startMatch();
     else ws.send(pack({ type: 'waiting', code: this.code }));
@@ -224,25 +270,25 @@ class Room {
     this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
     this._broadcast({ type: 'start', round: this.round });
     this._running = true;
-    this._lastHr = process.hrtime.bigint();
-    this._lastBroadcast = Date.now();
-    this._scheduleNext();
+    this._lastTick = Date.now();
+    this._acc = 0;
+    // Clean fixed-interval tick — runs at ~60Hz, no CPU spin
+    this._interval = setInterval(() => this._loop(), Math.floor(TICK_MS));
   }
 
-  _scheduleNext() {
+  _loop() {
     if (!this._running) return;
-    // setImmediate gives tighter timing than setInterval on cloud VMs.
-    // We check elapsed time ourselves using hrtime (nanosecond precision).
-    this._timer = setImmediate(() => {
-      if (!this._running) return;
-      const now = process.hrtime.bigint();
-      const elapsedMs = Number(now - this._lastHr) / 1e6;
-      if (elapsedMs >= TICK_MS) {
-        this._lastHr = now;
-        this._tick(Math.min(elapsedMs, TICK_MS * 3));
-      }
-      this._scheduleNext();
-    });
+    const now = Date.now();
+    const elapsed = Math.min(now - this._lastTick, TICK_MS * 5); // clamp spike
+    this._lastTick = now;
+    this._acc += elapsed;
+    let steps = 0;
+    while (this._acc >= TICK_MS && steps < 5) {
+      this._tick(TICK_MS);
+      this._acc -= TICK_MS;
+      steps++;
+    }
+    if (this._acc > TICK_MS * 2) this._acc = 0; // reset if badly behind
   }
 
   _respawn() {
@@ -255,11 +301,7 @@ class Room {
 
   receiveInput(pid, input) {
     const p = pid === 1 ? this.p1 : this.p2;
-    this.inputs[pid] = {
-      left: !!input.left, right: !!input.right, jump: !!input.jump,
-      crouch: !!input.crouch, attack: !!input.attack, parry: !!input.parry, sprint: !!input.sprint,
-    };
-    if (p && input.seq != null) p.lastSeq = input.seq;
+    if (p) p.queueInput(input);
   }
 
   _tick(dt) {
@@ -271,10 +313,14 @@ class Room {
         this.cdMs -= 1000; this.cdVal--;
         if (this.cdVal <= 0) { this.state = 'playing'; this.hitDone = false; this.cdVal = 0; }
       }
-      this.p1.update(dt, blank()); this.p2.update(dt, blank());
+      // Drain queues but don't apply during countdown
+      if (this.p1) { this.p1.consumeInput(); this.p1.update(dt, blank()); }
+      if (this.p2) { this.p2.consumeInput(); this.p2.update(dt, blank()); }
     } else if (this.state === 'playing') {
-      this.p1.update(dt, this.inputs[1]);
-      this.p2.update(dt, this.inputs[2]);
+      const i1 = this.p1 ? this.p1.consumeInput() : blank();
+      const i2 = this.p2 ? this.p2.consumeInput() : blank();
+      if (this.p1) this.p1.update(dt, i1);
+      if (this.p2) this.p2.update(dt, i2);
       if (!this.hitDone) {
         const r12 = this._checkHit(this.p1, this.p2);
         const r21 = this._checkHit(this.p2, this.p1);
@@ -284,20 +330,19 @@ class Room {
         else if (r21)               this._resolveKill(this.p2, this.p1);
       }
     } else if (this.state === 'round_end') {
-      this.p1.update(dt, blank()); this.p2.update(dt, blank());
+      if (this.p1) { this.p1.consumeInput(); this.p1.update(dt, blank()); }
+      if (this.p2) { this.p2.consumeInput(); this.p2.update(dt, blank()); }
       this.roundMs += dt;
       if (this.roundMs >= ROUND_DELAY) this._nextRound();
     }
 
-    const now = Date.now();
-    if (now - this._lastBroadcast >= BROADCAST_MS && this.state !== 'game_over') {
-      this._lastBroadcast = now;
-      this._sendState();
-    }
+    // Broadcast state every single tick (60Hz) — no separate broadcast timer
+    // Host sees himself with zero extra delay; remote sees at 60Hz too
+    if (this.state !== 'game_over') this._sendState();
   }
 
   _checkHit(atk, def) {
-    if (!atk.attacking || !atk.alive || !def.alive) return false;
+    if (!atk || !def || !atk.attacking || !atk.alive || !def.alive) return false;
     const tip = atk.swordTip();
     if (def.parrying) {
       const pb = def.parryBox();
@@ -327,15 +372,13 @@ class Room {
   }
 
   _sendState() {
-    // Send personalised snapshot: each client gets "me" (with reconciliation seq)
-    // and "opp" — this avoids sending id/char fields on every tick
     if (!this.p1 || !this.p2) return;
     const p1s = this.p1.snapshot();
     const p2s = this.p2.snapshot();
     const base = { type: 'state', state: this.state, round: this.round, cdVal: this.cdVal, cdMs: this.cdMs };
-    for (const { ws, pid } of this.clients) {
-      if (ws.readyState !== 1) continue;
-      ws.send(pack({ ...base, me: pid === 1 ? p1s : p2s, opp: pid === 1 ? p2s : p1s }));
+    for (const c of this.clients) {
+      if (c.ws.readyState !== 1) continue;
+      c.ws.send(pack({ ...base, me: c.pid === 1 ? p1s : p2s, opp: c.pid === 1 ? p2s : p1s }));
     }
   }
 
@@ -344,9 +387,25 @@ class Room {
     for (const { ws } of this.clients) if (ws.readyState === 1) ws.send(s);
   }
 
+  // Ping a specific client to measure RTT
+  sendPing(pid) {
+    const c = this.clients.find(x => x.pid === pid);
+    if (!c || c.ws.readyState !== 1) return;
+    c._pingTs = Date.now();
+    c.ws.send(pack({ type: 'ping', ts: c._pingTs }));
+  }
+
+  receivePong(pid) {
+    const c = this.clients.find(x => x.pid === pid);
+    if (!c || !c._pingTs) return;
+    c.rtt = Date.now() - c._pingTs;
+    c._pingTs = 0;
+    if (c.ws.readyState === 1) c.ws.send(pack({ type: 'rtt', rtt: c.rtt }));
+  }
+
   stop() {
     this._running = false;
-    if (this._timer) { clearImmediate(this._timer); this._timer = null; }
+    if (this._interval) { clearInterval(this._interval); this._interval = null; }
   }
 
   removeClient(ws) {
@@ -370,7 +429,14 @@ function genCode() {
 const wss   = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 const rooms = new Map();
 
-setInterval(() => { for (const ws of wss.clients) if (ws.readyState === 1) ws.ping(); }, 20_000);
+// Ping all players every 2s for latency display
+setInterval(() => {
+  for (const room of rooms.values())
+    for (const { pid } of room.clients)
+      room.sendPing(pid);
+}, 2000);
+
+// Clean up dead rooms every 5 minutes
 setInterval(() => {
   for (const [code, room] of rooms)
     if (room.clients.length === 0) { room.stop(); rooms.delete(code); }
@@ -378,14 +444,17 @@ setInterval(() => {
 
 wss.on('connection', (ws) => {
   let room = null, pid = null;
+
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
+
       if (msg.type === 'create_room') {
         let code; do { code = genCode(); } while (rooms.has(code));
         room = new Room(code); rooms.set(code, room); pid = 1;
         room.addClient(ws, pid); return;
       }
+
       if (msg.type === 'join_room') {
         const code = (msg.code || '').toUpperCase().trim();
         const r = rooms.get(code);
@@ -393,15 +462,30 @@ wss.on('connection', (ws) => {
         if (r.clients.length >= 2) { ws.send(pack({ type: 'error', msg: 'Room is full.' })); return; }
         room = r; pid = 2; room.addClient(ws, pid); return;
       }
+
       if (!room) return;
-      if (msg.type === 'input') room.receiveInput(pid, msg.input);
+
+      if (msg.type === 'input') {
+        // Zero-overhead: queue the input immediately, server tick will consume it
+        room.receiveInput(pid, msg.input);
+        return;
+      }
+
+      if (msg.type === 'pong') {
+        room.receivePong(pid);
+        return;
+      }
+
     } catch (_) {}
   });
+
   ws.on('close', () => {
     if (!room) return;
     room.removeClient(ws);
     if (room.clients.length === 0) rooms.delete(room.code);
   });
+
+  ws.on('error', () => {});
 });
 
-httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Bandit Duel :${PORT}`));
+httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Grotto Duel :${PORT}`));
