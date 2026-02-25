@@ -3,51 +3,44 @@ import { InputManager } from './input.js';
 import { AudioManager }  from './audio.js';
 
 // ── Constants (must mirror server exactly) ────────────────────────────────────
-const WORLD_W     = 3200;
-const FLOOR_Y     = 460;
-const MOVE_SPEED  = 5.5;
-const SPRINT_SPEED= 9.5;        // sprint is ~1.7× walk
-const JUMP_VEL    = -19;
-const GRAVITY     = 0.72;
+const WORLD_W      = 3200;
+const FLOOR_Y      = 460;
+const MOVE_SPEED   = 5.5;
+const SPRINT_SPEED = 9.5;
+const JUMP_VEL     = -19;
+const GRAVITY      = 0.72;
 const ATTACK_CD      = 480;
-const PARRY_DUR      = 650;       // ms parry window stays active
-const PARRY_CD       = 800;       // ms cooldown after parry ends
-const ATTACK_GROW_MS = 350;       // ms to reach full sword reach (twice as fast)
-const ROUND_DELAY = 2800;
-const MAX_ROUNDS  = 5;
-const MAJORITY    = 3;
-const SCALE       = 3;
+const PARRY_DUR      = 650;
+const PARRY_CD       = 800;
+const ATTACK_GROW_MS = 350;
+const ROUND_DELAY  = 2800;
+const MAX_ROUNDS   = 5;
+const MAJORITY     = 3;
+const SCALE        = 3;
 
-// Viewport (canvas size)
 const VW = 960;
 const VH = 540;
 
-// ── Hitboxes — calibrated to new 48×48 sprite (SCALE=3 → 144×144 px on screen)
-// Character body fills ~24px wide × 40px tall of the 48px frame.
-// Anchor = feet at bottom-centre of frame.
-// HW/HH are in world-pixels (same coordinate space as x,y).
-// SWORD_REACH: tip extends this many px beyond body edge.
 const HB = {
-  heavy: { hw: 36, hh: 115 },   // HeavyBandit (knight/p1)
-  light: { hw: 32, hh: 110 },   // LightBandit (thief/p2)
+  heavy: { hw: 36, hh: 115 },
+  light: { hw: 32, hh: 110 },
 };
-// Parry box: a wide shallow horizontal rectangle in front of the character
-// that blocks incoming sword tips while parrying.
-// Parry box = same final size as attack box: fw=SWORD_REACH, starting from body edge forward.
-// Front-side only — direction the defender faces.
 const PARRY_HB = {
-  heavy: { fw: 85, fh: 63 },   // fw=SWORD_REACH[heavy], fh=hh*0.55
-  light: { fw: 78, fh: 60 },   // fw=SWORD_REACH[light], fh=hh*0.55
+  heavy: { fw: 85, fh: 63 },
+  light: { fw: 78, fh: 60 },
 };
 const SWORD_REACH = { heavy: 85, light: 78 };
-const ATTACK_DUR  = { heavy: 900, light: 750 };  // total swing duration
+const ATTACK_DUR  = { heavy: 900, light: 750 };
 
-// Camera
 const CAM_LERP    = 0.085;
-const CAM_ZOOM_MAX= 1.0;
-const CAM_ZOOM_MIN= 0.38;
-const CAM_DIST_MIN= 250;
-const CAM_DIST_MAX= 1600;
+const CAM_ZOOM_MAX = 1.0;
+const CAM_ZOOM_MIN = 0.38;
+const CAM_DIST_MIN = 250;
+const CAM_DIST_MAX = 1600;
+
+// How many ms of opponent snapshots to buffer for interpolation
+// We render at INTERP_DELAY ms behind the leading edge → smooth even at 50Hz
+const INTERP_DELAY = 100;
 
 // ── Asset preload ─────────────────────────────────────────────────────────────
 const IMG_CACHE = {};
@@ -55,54 +48,36 @@ function preloadImg(src) {
   if (!IMG_CACHE[src]) { const i = new Image(); i.src = src; IMG_CACHE[src] = i; }
   return IMG_CACHE[src];
 }
-// Both characters use same sheet layout — HeavyBandit=P1, LightBandit=P2
 ['assets/HeavyBandit.png', 'assets/LightBandit.png'].forEach(preloadImg);
 
 // ── Sprite sheet definitions ──────────────────────────────────────────────────
-// Sheet: 384×240, 48×48 per frame, 8 cols × 5 rows
-// Row 0 = parry  (8 frames — guard stance)
-// Row 1 = sprint (8 frames — fast lean-forward run)
-// Row 2 = attack (8 frames — sword swing arc)
-// Row 3 = death1 (8 frames — falling/kneeling)
-// Row 4 = death2 (8 frames — lying flat; frame 0 is ghost/shadow, use frame 1+)
-//
-// Animations reused for missing states (idle, walk, jump, crouch):
-//   idle   → parry row 0, frame 0 held still
-//   walk   → parry row 0, all 8 frames (slow walk cycle in place)
-//   run    → sprint row 1, all 8 frames
-//   jump   → attack row 2, frame 0 held (sword-up pose looks good airborne)
-//   crouch → parry row 0, frame 4 held (crouched guard)
-//   attack → attack row 2, all 8 frames
-//   parry  → parry row 0, all 8 frames (faster)
-//   sprint → sprint row 1, all 8 frames
-//   death  → death2 row 4, frames 1-4 (skip ghost frame 0)
 const DEFS = {
   heavy: {
     src: 'assets/HeavyBandit.png', fw: 48, fh: 48,
     anims: {
-      idle:   { row:0, frames:[0],             fps:4  },
+      idle:   { row:0, frames:[0],               fps:4  },
       walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:9  },
       run:    { row:1, frames:[0,1,2,3,4,5,6,7], fps:13 },
       sprint: { row:1, frames:[0,1,2,3,4,5,6,7], fps:18 },
-      jump:   { row:2, frames:[0],             fps:4  },
-      crouch: { row:0, frames:[4],             fps:4  },
+      jump:   { row:2, frames:[0],               fps:4  },
+      crouch: { row:0, frames:[4],               fps:4  },
       attack: { row:2, frames:[0,1,2,3,4,5,6,7], fps:20 },
       parry:  { row:0, frames:[0,1,2,3,4,5,6,7], fps:14 },
-      death:  { row:4, frames:[1,2,3,4],       fps:8  },
+      death:  { row:4, frames:[1,2,3,4],         fps:8  },
     },
   },
   light: {
     src: 'assets/LightBandit.png', fw: 48, fh: 48,
     anims: {
-      idle:   { row:0, frames:[0],             fps:4  },
+      idle:   { row:0, frames:[0],               fps:4  },
       walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:9  },
       run:    { row:1, frames:[0,1,2,3,4,5,6,7], fps:13 },
       sprint: { row:1, frames:[0,1,2,3,4,5,6,7], fps:18 },
-      jump:   { row:2, frames:[0],             fps:4  },
-      crouch: { row:0, frames:[4],             fps:4  },
+      jump:   { row:2, frames:[0],               fps:4  },
+      crouch: { row:0, frames:[4],               fps:4  },
       attack: { row:2, frames:[0,1,2,3,4,5,6,7], fps:22 },
       parry:  { row:0, frames:[0,1,2,3,4,5,6,7], fps:14 },
-      death:  { row:4, frames:[1,2,3,4],       fps:8  },
+      death:  { row:4, frames:[1,2,3,4],         fps:8  },
     },
   },
 };
@@ -141,7 +116,6 @@ class Sprite {
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
     ctx.translate(x, y);
     if (this.flipX) ctx.scale(-1, 1);
-    // Draw centred: x-anchor at foot-centre, y-anchor at foot-bottom
     ctx.drawImage(this.img, sx, sy, fw, fh, -dw / 2, -dh, dw, dh);
     ctx.restore();
   }
@@ -154,55 +128,13 @@ class Player {
     this.x = x; this.y = FLOOR_Y;
     this.vx = 0; this.vy = 0;
     this.grounded = true; this.facingRight = (id === 1);
-    this.sprite.flipX = (id === 1);  // id=1 faces right → flip left-facing sheet
+    this.sprite.flipX = (id === 1);
     this.alive = true; this.dead = false; this.deadTimer = 0;
     this.deadX = 0; this.deadY = 0; this.deadVx = 0; this.deadVy = 0; this.deadAngle = 0;
     this.attacking = false; this.attackTimer = 0; this.attackCd = 0;
     this.crouching = false; this.parrying = false; this.parryTimer = 0; this.parryCd = 0;
     this.sprinting = false;
     this.score = 0; this.anim = 'idle';
-    // For extrapolation (online mode)
-    this._snapX = x; this._snapY = FLOOR_Y; this._snapVx = 0; this._snapVy = 0;
-    this._snapAge = 0;
-    this._wasGrounded = true;  // for land SFX detection
-  }
-
-  applySnap(s) {
-    this.grounded = s.grounded; this.facingRight = s.facingRight;
-    this.alive = s.alive; this.dead = s.dead;
-    this.attacking = s.attacking; this.crouching = s.crouching;
-    this.parrying = s.parrying || false;
-    this.sprinting = s.sprinting || false;
-    this.anim = s.anim; this.score = s.score;
-    if (s.attackTimer != null) this.attackTimer = s.attackTimer;
-    if (s.parryTimer  != null) this.parryTimer  = s.parryTimer;
-    this.sprite.flipX = s.facingRight;
-    if (this.sprite.anim !== s.anim) this.sprite.play(s.anim);
-    if (this.dead) {
-      this.deadX = s.deadX; this.deadY = s.deadY;
-      this.deadAngle = s.deadAngle; this.deadTimer = s.deadTimer;
-    } else if (this.alive) {
-      const dx = s.x - this.x, dy = s.y - this.y;
-      const dist = Math.sqrt(dx*dx + dy*dy);
-      if (dist > 200) { this.x = s.x; this.y = s.y; }
-      else if (dist > 4) { this.x += dx * 0.25; this.y += dy * 0.25; }
-      this._snapX = s.x; this._snapY = s.y;
-      this._snapVx = s.vx; this._snapVy = s.vy;
-      this._snapAge = 0;
-    }
-  }
-
-  extrapolate(dt) {
-    if (!this.alive || this.dead) return;
-    this._snapAge += dt;
-    const age = Math.min(this._snapAge, 120);
-    const frames = age / 16.67;
-    let ex = this._snapX + this._snapVx * frames;
-    let ey = this._snapY + this._snapVy * frames + 0.5 * GRAVITY * frames * frames;
-    if (ey > FLOOR_Y) ey = FLOOR_Y;
-    const alpha = Math.min(1, dt / 40);
-    this.x += (ex - this.x) * alpha;
-    this.y += (ey - this.y) * alpha;
   }
 
   update(dt) {
@@ -233,26 +165,16 @@ class Player {
     this.sprite.draw(ctx, this.x, this.y);
   }
 
-  // Draw hitbox + parry box outlines for debug overlay
   drawHitboxes(ctx) {
     if (!this.alive || this.dead) return;
     const hb  = HB[this.key];
     const phb = PARRY_HB[this.key];
     const dir = this.facingRight ? 1 : -1;
+    ctx.save(); ctx.lineWidth = 1.5;
 
-    ctx.save();
-    ctx.lineWidth = 1.5;
-
-    // Body box (green)
     ctx.strokeStyle = 'rgba(0,255,80,0.85)';
-    ctx.strokeRect(
-      this.x - hb.hw,
-      this.y - hb.hh,
-      hb.hw * 2,
-      hb.hh
-    );
+    ctx.strokeRect(this.x - hb.hw, this.y - hb.hh, hb.hw * 2, hb.hh);
 
-    // Sword tip — grows with attackTimer
     const sr       = SWORD_REACH[this.key];
     const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
     const curReach = this.attacking ? sr * growFrac : sr;
@@ -261,40 +183,28 @@ class Player {
     ctx.fillStyle = 'rgba(255,50,50,0.9)';
     ctx.beginPath(); ctx.arc(tipX, tipY, 3, 0, Math.PI * 2); ctx.fill();
 
-    // Sword line — grows with attack
     ctx.strokeStyle = 'rgba(255,80,80,0.70)';
-    ctx.beginPath();
-    ctx.moveTo(this.x + dir * hb.hw, tipY);
-    ctx.lineTo(tipX, tipY);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(this.x + dir * hb.hw, tipY); ctx.lineTo(tipX, tipY); ctx.stroke();
 
-    // Attack box (orange) — grows 0 → SWORD_REACH over ATTACK_GROW_MS
     if (this.attacking) {
       const atkW = sr * growFrac;
       const atkH = hb.hh * 0.55;
       const atkX = this.facingRight ? this.x + hb.hw : this.x - hb.hw - atkW;
       const atkY = this.y - hb.hh * 0.6 - atkH * 0.5 + (this.crouching ? hb.hh * 0.35 : 0);
-      ctx.strokeStyle = 'rgba(255,160,0,0.90)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(255,160,0,0.90)'; ctx.lineWidth = 1.5;
       ctx.strokeRect(atkX, atkY, atkW, atkH);
-      ctx.fillStyle = 'rgba(255,160,0,0.10)';
-      ctx.fillRect(atkX, atkY, atkW, atkH);
+      ctx.fillStyle = 'rgba(255,160,0,0.10)'; ctx.fillRect(atkX, atkY, atkW, atkH);
     }
 
-    // Parry box (cyan) — front-side only, full size instantly
     if (this.parrying) {
-      const atkH   = hb.hh * 0.55;
       const pLeft  = this.facingRight ? this.x + hb.hw          : this.x - hb.hw - phb.fw;
       const pRight = this.facingRight ? this.x + hb.hw + phb.fw : this.x - hb.hw;
       const pTop   = this.y - hb.hh * 0.85;
       const pBot   = this.y - hb.hh * 0.15;
-      ctx.strokeStyle = 'rgba(0,220,255,0.90)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(0,220,255,0.90)'; ctx.lineWidth = 1.5;
       ctx.strokeRect(pLeft, pTop, pRight - pLeft, pBot - pTop);
-      ctx.fillStyle = 'rgba(0,220,255,0.07)';
-      ctx.fillRect(pLeft, pTop, pRight - pLeft, pBot - pTop);
+      ctx.fillStyle = 'rgba(0,220,255,0.07)'; ctx.fillRect(pLeft, pTop, pRight - pLeft, pBot - pTop);
     }
-
     ctx.restore();
   }
 }
@@ -319,10 +229,8 @@ class Particles {
   }
   draw(ctx) {
     for (const p of this.p) {
-      ctx.save();
-      ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
-      ctx.globalAlpha = p.life * p.life;
-      ctx.fillStyle = p.col;
+      ctx.save(); ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+      ctx.globalAlpha = p.life * p.life; ctx.fillStyle = p.col;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
@@ -335,7 +243,7 @@ class Shake {
   constructor() { this.v = 0; }
   hit(n) { this.v = Math.max(this.v, n); }
   tick() { this.v *= .84; }
-  off() { return this.v < .15 ? { x: 0, y: 0 } : { x: (Math.random() - .5) * this.v * 2, y: (Math.random() - .5) * this.v * 1.2 }; }
+  off() { return this.v < .15 ? { x:0, y:0 } : { x:(Math.random()-.5)*this.v*2, y:(Math.random()-.5)*this.v*1.2 }; }
 }
 
 // ── SlowMo ────────────────────────────────────────────────────────────────────
@@ -347,7 +255,7 @@ class SlowMo {
     if (this.t > this.dur) { this.on = false; return 1; }
     const p = this.t / this.dur; return p < .25 ? .14 : .14 + (1 - .14) * ((p - .25) / .75);
   }
-  get m() { if (!this.on) return 1; const p = this.t / this.dur; return p < .25 ? .14 : .14 + (1 - .14) * ((p - .25) / .75); }
+  get m() { if (!this.on) return 1; const p = this.t/this.dur; return p<.25?.14:.14+(1-.14)*((p-.25)/.75); }
 }
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -364,13 +272,13 @@ class Camera {
     this._tz   = CAM_ZOOM_MAX - t * (CAM_ZOOM_MAX - CAM_ZOOM_MIN);
     const s    = 1 - Math.pow(1 - CAM_LERP, dt / 16.67);
     this.zoom += (this._tz - this.zoom) * s;
-    const halfW      = (VW / 2) / this.zoom;
-    const floorTgt   = VH * 0.88;
-    const idealCamY  = FLOOR_Y - (floorTgt - VH / 2) / this.zoom;
+    const halfW     = (VW / 2) / this.zoom;
+    const floorTgt  = VH * 0.88;
+    const idealCamY = FLOOR_Y - (floorTgt - VH / 2) / this.zoom;
     let tx = Math.max(halfW, Math.min(WORLD_W - halfW, mx));
     let ty = idealCamY;
-    const minY   = Math.min(p1.y, p2.y);
-    const jLead  = Math.max(0, FLOOR_Y - minY - 60);
+    const minY  = Math.min(p1.y, p2.y);
+    const jLead = Math.max(0, FLOOR_Y - minY - 60);
     ty -= jLead * 0.25;
     this._tx = tx; this._ty = ty;
     this.x += (this._tx - this.x) * s;
@@ -386,8 +294,7 @@ class Camera {
 // ── HUD ───────────────────────────────────────────────────────────────────────
 function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
   const w = VW, h = VH;
-  ctx.save();
-  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+  ctx.save(); ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
 
   ctx.font = 'bold 13px "Courier New"'; ctx.textAlign = 'left';
   ctx.fillStyle = '#e63946'; ctx.shadowColor = '#e63946'; ctx.shadowBlur = 7;
@@ -418,8 +325,7 @@ function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
     ctx.strokeStyle = 'rgba(0,0,0,0.92)'; ctx.lineWidth = 12;
     ctx.strokeText(msg.text, w / 2, h / 2 - 14);
     ctx.shadowColor = msg.color || '#fff'; ctx.shadowBlur = 28;
-    ctx.fillStyle = msg.color || '#fff';
-    ctx.fillText(msg.text, w / 2, h / 2 - 14);
+    ctx.fillStyle = msg.color || '#fff'; ctx.fillText(msg.text, w / 2, h / 2 - 14);
     ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
     if (msg.sub) {
       ctx.font = 'bold 20px "Courier New"';
@@ -428,6 +334,130 @@ function drawHUD(ctx, p1, p2, round, maxR, state, msg, myPid) {
     }
   }
   ctx.restore();
+}
+
+// ── Physics function (shared by CSP and local modes) ─────────────────────────
+// Pure function: takes player state + input + dt → mutates player state
+// Keeping this as a standalone fn makes CSP replay trivial.
+function applyPhysics(p, inp, dt, audio) {
+  if (p.dead || !p.alive) return;
+
+  const prevGrounded = p.grounded;
+  p.attackCd   = Math.max(0, p.attackCd   - dt);
+  p.parryCd    = Math.max(0, p.parryCd    - dt);
+  p.parryTimer = Math.max(0, p.parryTimer - dt);
+
+  const canSprint = inp.sprint && p.grounded && !p.attacking && !p.parrying;
+  p.sprinting = canSprint;
+  const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
+
+  p.vx = 0;
+  if (inp.left)  { p.vx = -speed; p.facingRight = false; }
+  if (inp.right) { p.vx =  speed; p.facingRight = true;  }
+
+  p.crouching = !!(inp.crouch && p.grounded && !p.sprinting);
+  if (p.crouching) p.vx = 0;
+
+  if (inp.parry && p.grounded && !p.attacking && p.parryCd <= 0 && p.parryTimer <= 0) {
+    p.parrying = true; p.parryTimer = PARRY_DUR; p.parryCd = PARRY_CD;
+    if (audio) audio.playParry();
+  }
+  if (p.parryTimer <= 0) p.parrying = false;
+
+  if (inp.jump && p.grounded) {
+    p.vy = JUMP_VEL; p.grounded = false;
+    if (audio) audio.playJump();
+  }
+  if (!p.grounded) p.vy += GRAVITY;
+  p.x += p.vx; p.y += p.vy;
+
+  if (p.y >= FLOOR_Y) {
+    p.y = FLOOR_Y; p.vy = 0; p.grounded = true;
+    if (!prevGrounded && audio) audio.playLand();
+  } else { p.grounded = false; }
+
+  if (p.x < 60) p.x = 60;
+  if (p.x > WORLD_W - 60) p.x = WORLD_W - 60;
+
+  if (inp.attack && p.attackCd <= 0 && !p.attacking && !p.parrying) {
+    p.attacking = true; p.attackTimer = 0; p.attackCd = ATTACK_CD;
+    p.sprite.play('attack', true);
+    if (audio) { audio.playSwordSwing(); audio.playAttackGrunt(); }
+  }
+  if (p.attacking) {
+    p.attackTimer += dt;
+    if (p.attackTimer >= ATTACK_DUR[p.key]) { p.attacking = false; p.attackTimer = 0; }
+  }
+
+  // Animation
+  p.sprite.flipX = p.facingRight;
+  const moving = Math.abs(p.vx) > 0.1;
+  if      (p.attacking)  p.sprite.play('attack');
+  else if (p.parrying)   p.sprite.play('parry');
+  else if (p.crouching)  p.sprite.play('crouch');
+  else if (!p.grounded)  p.sprite.play('jump');
+  else if (p.sprinting)  p.sprite.play('sprint');
+  else if (moving)       p.sprite.play('walk');
+  else                   p.sprite.play('idle');
+
+  if (audio) audio.tickWalk(moving, p.grounded, p.sprinting);
+}
+
+// ── Opponent snapshot buffer (for interpolation) ──────────────────────────────
+// Stores timestamped snapshots of the opponent from server updates.
+// We render the opponent at (now - INTERP_DELAY) by interpolating between
+// the two snapshots that bracket that target time.
+class SnapBuffer {
+  constructor() {
+    this.buf = [];        // { t, snap }  — sorted ascending by t
+    this.renderSnap = null;  // what we're actually rendering this frame
+  }
+
+  push(snap) {
+    const t = performance.now();
+    this.buf.push({ t, snap });
+    // Keep only last 600ms of history — enough for any reasonable jitter
+    const cutoff = t - 600;
+    while (this.buf.length > 2 && this.buf[0].t < cutoff) this.buf.shift();
+  }
+
+  // Returns interpolated snapshot for renderTime = now - INTERP_DELAY
+  // Returns null if not enough data yet
+  getInterpolated() {
+    if (this.buf.length === 0) return null;
+    const targetT = performance.now() - INTERP_DELAY;
+
+    // If all snaps are newer than targetT (startup), use oldest
+    if (this.buf[0].t >= targetT) return this.buf[0].snap;
+
+    // Find the two snaps that bracket targetT
+    let a = this.buf[0], b = this.buf[0];
+    for (let i = 1; i < this.buf.length; i++) {
+      if (this.buf[i].t <= targetT) { a = this.buf[i]; }
+      else { b = this.buf[i]; break; }
+    }
+
+    if (a === b) return a.snap;  // at or past latest snap
+
+    // Linear interpolation between a and b
+    const span = b.t - a.t;
+    const t    = span > 0 ? (targetT - a.t) / span : 0;
+    const s    = a.snap, e = b.snap;
+
+    return {
+      x:           s.x + (e.x - s.x) * t,
+      y:           s.y + (e.y - s.y) * t,
+      deadX:       s.deadX + (e.deadX - s.deadX) * t,
+      deadY:       s.deadY + (e.deadY - s.deadY) * t,
+      deadAngle:   s.deadAngle + (e.deadAngle - s.deadAngle) * t,
+      deadTimer:   e.deadTimer,
+      facingRight: t < 0.5 ? s.facingRight : e.facingRight,
+      alive:       e.alive, dead: e.dead,
+      attacking:   e.attacking, attackTimer: e.attackTimer,
+      crouching:   e.crouching, parrying: e.parrying, parryTimer: e.parryTimer,
+      sprinting:   e.sprinting, anim: e.anim, score: e.score,
+    };
+  }
 }
 
 // ── GAME ──────────────────────────────────────────────────────────────────────
@@ -449,14 +479,22 @@ export class Game {
     this.cdVal   = 3; this.cdMs = 0;
     this.roundMs = 0; this.hitDone = false;
     this.tutPhase = 0;
-    this._showHitboxes = false;  // toggled by \ key
+    this._showHitboxes = false;
     this._spawn(0, 0);
     this.running = false;
     this._raf    = null;
     this._tickFn = this._tick.bind(this);
     this._last   = 0;
     this.ws      = opts.socket || null;
-    this._lastSentInput = null;
+
+    // ── Online-mode networking state ──────────────────────────────────────────
+    // CSP: input sequence counter + ring buffer of unacknowledged inputs
+    this._seq        = 0;
+    this._inputHist  = [];   // { seq, inp, dt } — inputs not yet ack'd by server
+    // Opponent interpolation buffer
+    this._oppBuf     = new SnapBuffer();
+    // Last sent input (for dedup — we only send when input changes)
+    this._lastSentKey = '';
   }
 
   _spawn(s1, s2) {
@@ -466,6 +504,9 @@ export class Game {
     this.p1.facingRight = true;  this.p1.sprite.flipX = true;
     this.p2.facingRight = false; this.p2.sprite.flipX = false;
     this.cam = new Camera();
+    // Reset networking buffers on new round
+    this._seq = 0; this._inputHist = []; this._oppBuf = new SnapBuffer();
+    this._lastSentKey = '';
   }
 
   start() {
@@ -475,10 +516,7 @@ export class Game {
     } else {
       this.audio.startAmbience();
     }
-    // Hitbox debug toggle — press \ (Backslash)
-    this._hitboxKey = (e) => {
-      if (e.code === 'Backslash') this._showHitboxes = !this._showHitboxes;
-    };
+    this._hitboxKey = (e) => { if (e.code === 'Backslash') this._showHitboxes = !this._showHitboxes; };
     window.addEventListener('keydown', this._hitboxKey);
     this._last = performance.now();
     this._raf  = requestAnimationFrame(this._tickFn);
@@ -510,9 +548,9 @@ export class Game {
 
   _onMsg(msg) {
     switch (msg.type) {
-      case 'state':
-        if (msg.p1) this.p1.applySnap(msg.p1);
-        if (msg.p2) this.p2.applySnap(msg.p2);
+
+      case 'state': {
+        // Update game state
         if (msg.state && this.state !== 'round_end' && this.state !== 'game_over')
           this.state = msg.state;
         if ((msg.state === 'countdown' || msg.state === 'playing') && this.msg && this.state !== 'game_over')
@@ -520,7 +558,57 @@ export class Game {
         this.round = msg.round || this.round;
         this.cdVal = msg.cdVal != null ? msg.cdVal : this.cdVal;
         this.cdMs  = msg.cdMs  != null ? msg.cdMs  : this.cdMs;
+
+        const me  = msg.me;
+        const opp = msg.opp;
+
+        // ── Opponent: push raw server snapshot into interpolation buffer ──────
+        if (opp) {
+          this._oppBuf.push(opp);
+          // Mirror score onto opponent player object immediately
+          const oppPlayer = this.myPid === 1 ? this.p2 : this.p1;
+          if (opp.score != null) oppPlayer.score = opp.score;
+        }
+
+        // ── Local player: server reconciliation ───────────────────────────────
+        if (me && me.seq != null) {
+          const myPlayer = this.myPid === 1 ? this.p1 : this.p2;
+
+          // 1. Adopt server authoritative state
+          myPlayer.x          = me.x;
+          myPlayer.y          = me.y;
+          myPlayer.vx         = me.vx;
+          myPlayer.vy         = me.vy;
+          myPlayer.grounded   = me.grounded;
+          myPlayer.attacking  = me.attacking;
+          myPlayer.attackTimer = me.attackTimer || 0;
+          myPlayer.attackCd   = me.attackCd || 0;
+          myPlayer.parrying   = me.parrying  || false;
+          myPlayer.parryTimer = me.parryTimer || 0;
+          myPlayer.parryCd    = me.parryCd   || 0;
+          myPlayer.crouching  = me.crouching || false;
+          myPlayer.sprinting  = me.sprinting || false;
+          myPlayer.facingRight= me.facingRight;
+          myPlayer.score      = me.score;
+          myPlayer.alive      = me.alive;
+          myPlayer.dead       = me.dead;
+          if (me.dead) {
+            myPlayer.deadX = me.deadX; myPlayer.deadY = me.deadY;
+            myPlayer.deadAngle = me.deadAngle; myPlayer.deadTimer = me.deadTimer;
+          }
+
+          // 2. Discard inputs the server has already processed
+          const ackSeq = me.seq;
+          this._inputHist = this._inputHist.filter(h => h.seq > ackSeq);
+
+          // 3. Re-apply all unacknowledged inputs on top of server state
+          //    (no audio during replay — don't re-fire jump sounds etc.)
+          for (const h of this._inputHist) {
+            applyPhysics(myPlayer, h.inp, h.dt, null);
+          }
+        }
         break;
+      }
 
       case 'kill': {
         const atk = msg.atk === 1 ? this.p1 : this.p2;
@@ -537,11 +625,9 @@ export class Game {
         break;
       }
 
-      case 'parried': {
-        // Server confirmed a parry — play clang on both clients
+      case 'parried':
         this.audio.playParry();
         break;
-      }
 
       case 'new_round': {
         this.round = msg.round || this.round;
@@ -570,9 +656,13 @@ export class Game {
     }
   }
 
-  _sendInput() {
+  _sendInput(inp) {
     if (!this.ws || this.ws.readyState !== 1) return;
-    this.ws.send(JSON.stringify({ type: 'input', input: this.input.p1 }));
+    // Only send when input state actually changes — saves bandwidth
+    const key = `${+inp.left}${+inp.right}${+inp.jump}${+inp.crouch}${+inp.attack}${+inp.parry}${+inp.sprint}${this._seq}`;
+    if (key === this._lastSentKey) return;
+    this._lastSentKey = key;
+    this.ws.send(JSON.stringify({ type: 'input', input: { ...inp, seq: this._seq } }));
   }
 
   // ── Main loop ─────────────────────────────────────────────────────────────
@@ -590,23 +680,69 @@ export class Game {
     this.shake.tick(); this.fx.update();
 
     if (this.mode === 'online') {
-      if (this.state === 'playing' || this.state === 'countdown') this._sendInput();
-      // Local player: predict immediately from input (zero latency feel)
-      if (this.state === 'playing') this._predictLocal(dt);
-      // Opponent: extrapolate from last server snap
-      const opp = this.myPid === 1 ? this.p2 : this.p1;
-      opp.extrapolate(raw);
-      opp.update(dt);
-      // Local player sprite still needs frame advance
-      const me = this.myPid === 1 ? this.p1 : this.p2;
-      me.sprite.update(dt);
-      if (this.msg) this.msg.age += raw;
-      if (this.state === 'round_end' && this.msg && this.msg.age > 2400) this.msg = null;
-      if (this.state !== 'waiting') this.cam.update(this.p1, this.p2, raw);
+      this._updateOnline(dt, raw);
       return;
     }
+    this._updateLocal(dt, raw);
+  }
 
-    // LOCAL / TUTORIAL
+  // ── ONLINE UPDATE ─────────────────────────────────────────────────────────
+  _updateOnline(dt, raw) {
+    const me  = this.myPid === 1 ? this.p1 : this.p2;
+    const opp = this.myPid === 1 ? this.p2 : this.p1;
+
+    if (this.state === 'playing' || this.state === 'countdown') {
+      // ── CLIENT-SIDE PREDICTION ──────────────────────────────────────────
+      // Stamp this input with a sequence number, record it in history,
+      // apply it locally immediately (zero-latency feel).
+      const inp = this.input.p1;
+      if (this.state === 'playing') {
+        this._seq++;
+        const inpCopy = { ...inp };
+        this._inputHist.push({ seq: this._seq, inp: inpCopy, dt });
+        // Trim history to 1 second max (shouldn't need more than ~60 frames)
+        if (this._inputHist.length > 120) this._inputHist.shift();
+        applyPhysics(me, inpCopy, dt, this.audio);
+        me.sprite.update(dt);
+      }
+      this._sendInput(inp);
+    }
+
+    // ── OPPONENT INTERPOLATION ──────────────────────────────────────────────
+    // Pull the interpolated state from 100ms ago — always smooth, never pops
+    const interpSnap = this._oppBuf.getInterpolated();
+    if (interpSnap) {
+      opp.x           = interpSnap.x;
+      opp.y           = interpSnap.y;
+      opp.facingRight = interpSnap.facingRight;
+      opp.alive       = interpSnap.alive;
+      opp.dead        = interpSnap.dead;
+      opp.attacking   = interpSnap.attacking;
+      opp.attackTimer = interpSnap.attackTimer || 0;
+      opp.crouching   = interpSnap.crouching;
+      opp.parrying    = interpSnap.parrying;
+      opp.parryTimer  = interpSnap.parryTimer || 0;
+      opp.sprinting   = interpSnap.sprinting;
+      if (opp.dead) {
+        opp.deadX = interpSnap.deadX; opp.deadY = interpSnap.deadY;
+        opp.deadAngle = interpSnap.deadAngle; opp.deadTimer = interpSnap.deadTimer;
+      }
+      // Drive opponent animation from interpolated state
+      opp.sprite.flipX = opp.facingRight;
+      if (opp.sprite.anim !== interpSnap.anim) opp.sprite.play(interpSnap.anim);
+    }
+    opp.sprite.update(dt);
+    opp.update(dt);  // dead body physics
+
+    if (this.msg) this.msg.age += raw;
+    if (this.state === 'round_end' && this.msg && this.msg.age > 2400) this.msg = null;
+
+    // Use interpolated positions for camera — always smooth
+    if (this.state !== 'waiting') this.cam.update(this.p1, this.p2, raw);
+  }
+
+  // ── LOCAL / TUTORIAL UPDATE ───────────────────────────────────────────────
+  _updateLocal(dt, raw) {
     if (this.state === 'countdown') {
       this.cdMs += raw;
       while (this.cdMs >= 1000) {
@@ -623,13 +759,11 @@ export class Game {
         const p1hit = this._localHit(this.p1, this.p2);
         const p2hit = this._localHit(this.p2, this.p1);
         if (p1hit === 'parried') {
-          this.audio.playParry();
-          this._parryKnockback(this.p1, this.p2);
+          this.audio.playParry(); this._parryKnockback(this.p1, this.p2);
         } else if (p1hit) {
           this._localKill(this.p1, this.p2); this.hitDone = true;
         } else if (p2hit === 'parried') {
-          this.audio.playParry();
-          this._parryKnockback(this.p2, this.p1);
+          this.audio.playParry(); this._parryKnockback(this.p2, this.p1);
         } else if (p2hit) {
           this._localKill(this.p2, this.p1); this.hitDone = true;
         }
@@ -648,140 +782,12 @@ export class Game {
     }
   }
 
-  _predictLocal(dt) {
-    const me  = this.myPid === 1 ? this.p1 : this.p2;
-    const inp = this.input.p1;
-    if (!me.alive || me.dead) return;
-    const prevGrounded = me.grounded;
-    me.attackCd   = Math.max(0, me.attackCd   - dt);
-    me.parryCd    = Math.max(0, me.parryCd    - dt);
-    me.parryTimer = Math.max(0, me.parryTimer - dt);
-    const canSprint = inp.sprint && me.grounded && !me.attacking && !me.parrying;
-    me.sprinting = canSprint;
-    const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
-    me.vx = 0;
-    if (inp.left)  { me.vx = -speed; me.facingRight = false; }
-    if (inp.right) { me.vx =  speed; me.facingRight = true;  }
-    me.crouching = !!(inp.crouch && me.grounded && !me.sprinting);
-    if (me.crouching) me.vx = 0;
-    if (inp.parry && me.grounded && !me.attacking && me.parryCd <= 0 && me.parryTimer <= 0) {
-      me.parrying = true; me.parryTimer = PARRY_DUR; me.parryCd = PARRY_CD;
-    }
-    if (me.parryTimer <= 0) me.parrying = false;
-    if (inp.jump && me.grounded) { me.vy = JUMP_VEL; me.grounded = false; this.audio.playJump(); }
-    if (!me.grounded) me.vy += GRAVITY;
-    me.x += me.vx; me.y += me.vy;
-    if (me.y >= FLOOR_Y) {
-      me.y = FLOOR_Y; me.vy = 0; me.grounded = true;
-      if (!prevGrounded) this.audio.playLand();
-    } else { me.grounded = false; }
-    if (me.x < 60) me.x = 60;
-    if (me.x > WORLD_W - 60) me.x = WORLD_W - 60;
-    if (inp.attack && me.attackCd <= 0 && !me.attacking && !me.parrying) {
-      me.attacking = true; me.attackTimer = 0; me.attackCd = ATTACK_CD;
-      me.sprite.play('attack', true);
-      this.audio.playSwordSwing(); this.audio.playAttackGrunt();
-    }
-    if (me.attacking) {
-      me.attackTimer += dt;
-      if (me.attackTimer >= ATTACK_DUR[me.key]) { me.attacking = false; me.attackTimer = 0; }
-    }
-    const moving = Math.abs(me.vx) > 0.1;
-    this.audio.tickWalk(moving, me.grounded, me.sprinting);
-    me.sprite.flipX = me.facingRight;
-    if      (me.attacking)  me.sprite.play('attack');
-    else if (me.parrying)   me.sprite.play('parry');
-    else if (me.crouching)  me.sprite.play('crouch');
-    else if (!me.grounded)  me.sprite.play('jump');
-    else if (me.sprinting)  me.sprite.play('sprint');
-    else if (moving)        me.sprite.play('walk');
-    else                    me.sprite.play('idle');
-  }
-
   _localUpdatePlayers(dt, lock) {
     const b = { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
-    this._localPhysics(this.p1, dt, lock ? b : this.input.p1);
+    applyPhysics(this.p1, lock ? b : this.input.p1, dt, this.audio);
     if (this.mode === 'tutorial') this._aiUpdate(this.p2, dt);
-    else this._localPhysics(this.p2, dt, lock ? b : this.input.p2);
+    else applyPhysics(this.p2, lock ? b : this.input.p2, dt, null);
     this.p1.update(dt); this.p2.update(dt);
-  }
-
-  _localPhysics(p, dt, inp) {
-    if (p.dead) { p.update(dt); return; }
-    if (!p.alive) return;
-
-    const prevGrounded = p.grounded;
-    p.attackCd  = Math.max(0, p.attackCd  - dt);
-    p.parryCd   = Math.max(0, p.parryCd   - dt);
-    p.parryTimer = Math.max(0, p.parryTimer - dt);
-
-    // Sprint: only while moving on ground, not while attacking or parrying
-    const canSprint = inp.sprint && p.grounded && !p.attacking && !p.parrying;
-    p.sprinting = canSprint;
-    const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
-
-    p.vx = 0;
-    if (inp.left)  { p.vx = -speed; p.facingRight = false; }
-    if (inp.right) { p.vx =  speed; p.facingRight = true;  }
-
-    p.crouching = !!(inp.crouch && p.grounded && !p.sprinting);
-    if (p.crouching) p.vx = 0;
-
-    // Parry: can only parry if on ground, not attacking, cooldown elapsed
-    if (inp.parry && p.grounded && !p.attacking && p.parryCd <= 0 && p.parryTimer <= 0) {
-      p.parrying   = true;
-      p.parryTimer = PARRY_DUR;
-      p.parryCd    = PARRY_CD;
-      this.audio.playParry();
-    }
-    if (p.parryTimer <= 0) p.parrying = false;
-
-    // Jump sound (pre-jump on takeoff)
-    if (inp.jump && p.grounded) {
-      p.vy = JUMP_VEL; p.grounded = false;
-      this.audio.playJump();
-    }
-    if (!p.grounded) p.vy += GRAVITY;
-    p.x += p.vx; p.y += p.vy;
-
-    if (p.y >= FLOOR_Y) {
-      p.y = FLOOR_Y; p.vy = 0; p.grounded = true;
-      // Land sound: only when transitioning from airborne → grounded
-      if (!prevGrounded) this.audio.playLand();
-    } else { p.grounded = false; }
-
-    if (p.x < 60) p.x = 60;
-    if (p.x > WORLD_W - 60) p.x = WORLD_W - 60;
-
-    // Attack (blocked while parrying)
-    if (inp.attack && p.attackCd <= 0 && !p.attacking && !p.parrying) {
-      p.attacking = true; p.attackTimer = 0; p.attackCd = ATTACK_CD;
-      p.sprite.play('attack', true);
-      this.audio.playSwordSwing();
-      this.audio.playAttackGrunt();
-    }
-    if (p.attacking) {
-      p.attackTimer += dt;
-      if (p.attackTimer >= ATTACK_DUR[p.key]) { p.attacking = false; p.attackTimer = 0; }
-    }
-
-    // Walk / sprint footstep audio
-    const moving = Math.abs(p.vx) > 0.1;
-    // Only drive audio for P1 (local keyboard player) to avoid double-looping in local mode
-    if (p.id === 1 || this.mode !== 'local') {
-      this.audio.tickWalk(moving, p.grounded, p.sprinting);
-    }
-
-    // Animation state
-    // Sprite sheet faces LEFT by default → flip when facing right
-    p.sprite.flipX = p.facingRight;
-    if      (p.attacking)  p.sprite.play('attack');
-    else if (p.parrying)   p.sprite.play('parry');
-    else if (p.crouching)  p.sprite.play('crouch');
-    else if (!p.grounded)  p.sprite.play('jump');
-    else if (p.sprinting)  p.sprite.play('sprint');
-    else if (moving)       p.sprite.play('walk');
-    else                   p.sprite.play('idle');
   }
 
   _aiUpdate(p, dt) {
@@ -792,58 +798,42 @@ export class Game {
       p._aiMs = 0;
       const dx = this.p1.x - p.x, dist = Math.abs(dx);
       p._aiIn = { left:false, right:false, jump:false, attack:false, crouch:false, parry:false, sprint:false };
-      if (dist > 160)      { dx > 0 ? (p._aiIn.right = true) : (p._aiIn.left = true); }
-      else if (dist > 70)  { if (Math.random() < .4) p._aiIn.attack = true; }
-      else                 { if (Math.random() < .6) p._aiIn.attack = true; else dx > 0 ? (p._aiIn.left = true) : (p._aiIn.right = true); }
+      if (dist > 160)     { dx > 0 ? (p._aiIn.right = true) : (p._aiIn.left = true); }
+      else if (dist > 70) { if (Math.random() < .4) p._aiIn.attack = true; }
+      else                { if (Math.random() < .6) p._aiIn.attack = true; else dx > 0 ? (p._aiIn.left = true) : (p._aiIn.right = true); }
       if (p.grounded && Math.random() < .08) p._aiIn.jump = true;
     }
-    this._localPhysics(p, dt, p._aiIn);
+    applyPhysics(p, p._aiIn, dt, null);
   }
 
-  // Returns: false (no hit), true (kill), or 'parried'
   _localHit(atk, def) {
     if (!atk.attacking || !atk.alive || !def.alive) return false;
-    const dir = atk.facingRight ? 1 : -1;
-    const hbA = HB[atk.key];
-
-    // Attack reach grows from 0 → SWORD_REACH over ATTACK_GROW_MS, then holds.
-    const growFrac  = Math.min(atk.attackTimer / ATTACK_GROW_MS, 1);
-    const curReach  = SWORD_REACH[atk.key] * growFrac;
+    const dir  = atk.facingRight ? 1 : -1;
+    const hbA  = HB[atk.key];
+    const growFrac = Math.min(atk.attackTimer / ATTACK_GROW_MS, 1);
+    const curReach = SWORD_REACH[atk.key] * growFrac;
     const tipX = atk.x + dir * (hbA.hw + curReach);
     const tipY = atk.y - hbA.hh * 0.6 + (atk.crouching ? hbA.hh * 0.35 : 0);
-
     const hbD  = HB[def.key];
     const yOff = def.crouching ? hbD.hh * 0.3 : 0;
-
-    // ── PARRY FIRST — before body check ──────────────────────────────────────
-    // Parry box is front-side only: starts at body edge, extends fw forward.
-    // Same final size as the attack box. Instant — full size from frame 0.
     if (def.parrying) {
-      const phb = PARRY_HB[def.key];
-      // Front edge of body, then extend fw in the direction defender faces
+      const phb   = PARRY_HB[def.key];
       const pLeft  = def.facingRight ? def.x + hbD.hw            : def.x - hbD.hw - phb.fw;
       const pRight = def.facingRight ? def.x + hbD.hw + phb.fw   : def.x - hbD.hw;
       const pTop   = def.y - hbD.hh * 0.85;
       const pBot   = def.y - hbD.hh * 0.15;
-      if (tipX >= pLeft && tipX <= pRight && tipY >= pTop && tipY <= pBot) {
-        return 'parried';
-      }
+      if (tipX >= pLeft && tipX <= pRight && tipY >= pTop && tipY <= pBot) return 'parried';
     }
-
-    // ── BODY HIT ─────────────────────────────────────────────────────────────
     const bodyHit = tipX >= def.x - hbD.hw && tipX <= def.x + hbD.hw &&
                     tipY >= def.y - hbD.hh + yOff && tipY <= def.y;
     return bodyHit ? true : false;
   }
 
   _parryKnockback(atk, def) {
-    const pushDir   = atk.facingRight ? -1 : 1;
-    atk.vx          = pushDir * 16;
-    atk.vy          = -5;
-    atk.grounded    = false;
-    atk.attacking   = false;
-    atk.attackTimer = 0;
-    atk.attackCd    = ATTACK_CD;
+    const pushDir = atk.facingRight ? -1 : 1;
+    atk.vx = pushDir * 16; atk.vy = -5;
+    atk.grounded = false; atk.attacking = false;
+    atk.attackTimer = 0; atk.attackCd = ATTACK_CD;
     this.shake.hit(4);
     const hbD = HB[def.key];
     const cx  = def.facingRight ? def.x + hbD.hw + 10 : def.x - hbD.hw - 10;
@@ -897,7 +887,7 @@ export class Game {
     this.round++;
     this.fx.clear(); this.shake = new Shake(); this.slow = new SlowMo();
     this.msg = null; this.roundMs = 0; this.cdVal = 3; this.cdMs = 0; this.hitDone = false;
-    this._spawn(s1, s2); this.state = 'countdown';
+    this._spawn(this.p1.score, this.p2.score); this.state = 'countdown';
   }
 
   _exit() { this.stop(); window.dispatchEvent(new CustomEvent('game:exit')); }
@@ -919,19 +909,16 @@ export class Game {
       return;
     }
 
-    // World-space
     ctx.save();
     const shk = this.shake.off();
     ctx.translate(shk.x, shk.y);
     this.cam.apply(ctx);
 
-    // Floor
     ctx.fillStyle = 'rgba(255,255,255,0.09)';
     ctx.fillRect(0, FLOOR_Y, WORLD_W, 3);
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fillRect(0, FLOOR_Y + 3, WORLD_W, 8);
 
-    // Arena edges
     ctx.fillStyle = 'rgba(78,205,196,0.12)';
     ctx.fillRect(0, 0, 6, FLOOR_Y + 3);
     ctx.fillRect(WORLD_W - 6, 0, 6, FLOOR_Y + 3);
@@ -940,7 +927,6 @@ export class Game {
     this.p1.draw(ctx);
     this.p2.draw(ctx);
 
-    // Hitbox debug overlay (toggled by \)
     if (this._showHitboxes) {
       this.p1.drawHitboxes(ctx);
       this.p2.drawHitboxes(ctx);
@@ -948,17 +934,15 @@ export class Game {
 
     ctx.restore();
 
-    // Slow-mo vignette
     if (this.slow.on) {
       ctx.save(); ctx.shadowBlur = 0;
       const t = 1 - this.slow.m;
-      const g = ctx.createRadialGradient(vw / 2, vh / 2, vh * .3, vw / 2, vh / 2, vh * .9);
-      g.addColorStop(0, 'transparent'); g.addColorStop(1, `rgba(0,0,0,${t * .5})`);
+      const g = ctx.createRadialGradient(vw/2, vh/2, vh*.3, vw/2, vh/2, vh*.9);
+      g.addColorStop(0, 'transparent'); g.addColorStop(1, `rgba(0,0,0,${t*.5})`);
       ctx.fillStyle = g; ctx.fillRect(0, 0, vw, vh);
       ctx.restore();
     }
 
-    // Countdown
     if (this.state === 'countdown' || (this.state === 'playing' && this.cdVal === 0 && this.cdMs < 700)) {
       const label = this.cdVal > 0 ? String(this.cdVal) : 'FIGHT!';
       const fade  = this.state === 'playing' ? Math.max(0, 1 - this.cdMs / 500) : 1;
@@ -974,7 +958,6 @@ export class Game {
 
     drawHUD(ctx, this.p1, this.p2, this.round, MAX_ROUNDS, this.state, this.msg, this.myPid);
 
-    // Tutorial hint
     if (this.mode === 'tutorial') {
       const lines = [
         'A/D Move  W Jump  S Crouch  J Attack  K Parry  LShift Sprint',
@@ -982,13 +965,12 @@ export class Game {
         'Watch your spacing. First strike wins.',
       ];
       ctx.save(); ctx.shadowBlur = 0; ctx.globalAlpha = .85;
-      ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(vw / 2 - 340, vh - 54, 680, 36);
+      ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(vw/2-340, vh-54, 680, 36);
       ctx.fillStyle = '#4ecdc4'; ctx.font = 'bold 12px "Courier New"'; ctx.textAlign = 'center';
-      ctx.fillText(lines[Math.min(this.tutPhase, lines.length - 1)], vw / 2, vh - 30);
+      ctx.fillText(lines[Math.min(this.tutPhase, lines.length-1)], vw/2, vh-30);
       ctx.restore();
     }
 
-    // Game-over overlay
     if (this.state === 'game_over') {
       ctx.save(); ctx.shadowBlur = 0;
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, vw, vh);
@@ -996,29 +978,28 @@ export class Game {
         ctx.textAlign = 'center';
         ctx.font = 'bold 62px "Courier New"';
         ctx.strokeStyle = 'rgba(0,0,0,0.95)'; ctx.lineWidth = 13;
-        ctx.strokeText(this.msg.text, vw / 2, vh / 2 - 14);
+        ctx.strokeText(this.msg.text, vw/2, vh/2-14);
         ctx.shadowColor = this.msg.color || '#fff'; ctx.shadowBlur = 28;
         ctx.fillStyle = this.msg.color || '#fff';
-        ctx.fillText(this.msg.text, vw / 2, vh / 2 - 14);
+        ctx.fillText(this.msg.text, vw/2, vh/2-14);
         ctx.shadowBlur = 0;
         if (this.msg.sub) {
           ctx.font = 'bold 20px "Courier New"';
           ctx.fillStyle = 'rgba(230,230,230,0.9)';
-          ctx.fillText(this.msg.sub, vw / 2, vh / 2 + 26);
+          ctx.fillText(this.msg.sub, vw/2, vh/2+26);
         }
         ctx.fillStyle = 'rgba(150,150,150,0.55)';
         ctx.font = '13px "Courier New"';
-        ctx.fillText('returning to menu…', vw / 2, vh / 2 + 60);
+        ctx.fillText('returning to menu…', vw/2, vh/2+60);
       }
       ctx.restore();
     }
 
-    // Hitbox toggle reminder (small, always visible)
     if (this._showHitboxes) {
       ctx.save(); ctx.shadowBlur = 0;
       ctx.font = '11px "Courier New"'; ctx.textAlign = 'right';
       ctx.fillStyle = 'rgba(0,255,80,0.6)';
-      ctx.fillText('HITBOXES  [\\] toggle  |  green=body  orange=attack  cyan=parry', vw - 12, vh - 10);
+      ctx.fillText('HITBOXES  [\\] toggle  |  green=body  orange=attack  cyan=parry', vw-12, vh-10);
       ctx.restore();
     }
   }

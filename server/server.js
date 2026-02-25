@@ -16,109 +16,68 @@ const MIME = {
   '.jpg':'image/jpeg', '.wav':'audio/wav',
   '.ico':'image/x-icon','.svg':'image/svg+xml',
 };
-// ── Cache-busting version hash ────────────────────────────────────────────────
-// Hash is computed from the content of all client JS files at startup.
-// Whenever any JS file changes (new deploy), the hash changes, forcing browsers
-// to fetch fresh copies — even if they cached the old ones.
+
 function computeBuildHash() {
   const jsFiles = ['main.js', 'game.js', 'audio.js', 'input.js'];
   const h = createHash('sha1');
   for (const f of jsFiles) {
-    try { h.update(fs.readFileSync(join(CLIENT_DIR, f))); }
-    catch (_) {}
+    try { h.update(fs.readFileSync(join(CLIENT_DIR, f))); } catch (_) {}
   }
   return h.digest('hex').slice(0, 12);
 }
 const BUILD_HASH = computeBuildHash();
 console.log(`[server] build hash: ${BUILD_HASH}`);
 
-// Inject ?v=HASH into main.js script tag so each deploy busts the browser cache.
-// index.html itself is served with no-cache so it always reflects the latest hash.
 function injectVersion(html) {
-  return html
-    .replace(
-      /(<script[^>]+src="main\.js)(")/,
-      `$1?v=${BUILD_HASH}$2`
-    );
+  return html.replace(/(<script[^>]+src="main\.js)(")/, `$1?v=${BUILD_HASH}$2`);
 }
 
 const httpServer = http.createServer((req, res) => {
-  // Strip query string (e.g. ?v=abc123) — it exists only for cache-busting
-	let urlPath = req.url.split('?')[0];
-
-// remove leading slash ❗❗❗
-if (urlPath.startsWith('/')) {
-  urlPath = urlPath.slice(1);
-}
-
-// default route
-if (urlPath === '') {
-  urlPath = 'index.html';
-}
-
-const filePath = join(CLIENT_DIR, urlPath);
+  let urlPath = req.url.split('?')[0];
+  if (urlPath.startsWith('/')) urlPath = urlPath.slice(1);
+  if (urlPath === '') urlPath = 'index.html';
+  const filePath = join(CLIENT_DIR, urlPath);
   const ext  = extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'application/octet-stream';
-
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not found'); return; }
-
     const headers = { 'Content-Type': mime };
-
     if (ext === '.html') {
-      // HTML: never cache — always re-fetch so the injected hash stays current
       headers['Cache-Control'] = 'no-store';
       data = Buffer.from(injectVersion(data.toString()));
     } else if (ext === '.js') {
-      // JS files: revalidate every request (304 if unchanged, full fetch if new deploy)
-      // The ?v= query string ensures a brand-new URL on every deploy, so browsers
-      // that have an old ?v= URL will always request the new one.
       headers['Cache-Control'] = 'public, max-age=31536000, immutable';
-      // (immutable because the URL itself changes with every deploy via ?v=HASH)
     } else if (ext === '.png' || ext === '.wav') {
-      // Static assets (sprites, audio) rarely change — cache aggressively
       headers['Cache-Control'] = 'public, max-age=86400';
     } else {
       headers['Cache-Control'] = 'no-cache';
     }
-
     res.writeHead(200, headers);
     res.end(data);
   });
 });
 
-// ── GAME CONSTANTS — mirror client exactly ────────────────────────────────────
-const WORLD_W     = 3200;
-const FLOOR_Y     = 460;
-const MOVE_SPEED  = 5.5;
-const SPRINT_SPEED= 9.5;
-const JUMP_VEL    = -19;
-const GRAVITY     = 0.72;
+// ── GAME CONSTANTS — must mirror client exactly ───────────────────────────────
+const WORLD_W      = 3200;
+const FLOOR_Y      = 460;
+const MOVE_SPEED   = 5.5;
+const SPRINT_SPEED = 9.5;
+const JUMP_VEL     = -19;
+const GRAVITY      = 0.72;
 const ATTACK_CD      = 480;
-const PARRY_DUR      = 650;     // ms parry window active
-const PARRY_CD       = 800;     // ms cooldown after parry
-const ATTACK_GROW_MS = 350;     // ms to reach full sword reach
-const TICK_MS     = 1000 / 60;
-const ROUND_DELAY = 2800;
-const MAX_ROUNDS  = 5;
-const MAJORITY    = 3;
+const PARRY_DUR      = 650;
+const PARRY_CD       = 800;
+const ATTACK_GROW_MS = 350;
+const TICK_MS      = 1000 / 60;
+const ROUND_DELAY  = 2800;
+const MAX_ROUNDS   = 5;
+const MAJORITY     = 3;
+const BROADCAST_MS = 20;   // 50 Hz state broadcasts — client interpolates between them
 
-// Hitboxes — calibrated to new 48×48 sprite sheets
-// HW/HH are half-widths in world pixels, anchor at feet (y = FLOOR_Y)
-const HB = {
-  heavy: { hw: 36, hh: 115 },   // HeavyBandit (P1 / knight)
-  light: { hw: 32, hh: 110 },   // LightBandit (P2 / thief)
-};
-// Parry box: forward-facing rectangle that deflects incoming sword tips
-const PARRY_HB = {
-  heavy: { fw: 85, fh: 63 },
-  light: { fw: 78, fh: 60 },
-};
-// How far sword tip extends beyond body edge
+const HB          = { heavy: { hw: 36, hh: 115 }, light: { hw: 32, hh: 110 } };
+const PARRY_HB    = { heavy: { fw: 85, fh: 63  }, light: { fw: 78, fh: 60  } };
 const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 900, light: 750 };
-
-const BROADCAST_MS = 0;  // broadcast every tick (60 Hz)
 
 // ── Server Player ─────────────────────────────────────────────────────────────
 class SPlayer {
@@ -135,37 +94,27 @@ class SPlayer {
     this.parrying  = false; this.parryTimer = 0; this.parryCd = 0;
     this.sprinting = false;
     this.score = 0; this.anim = 'idle';
+    this.lastSeq = 0;  // last input sequence number processed
   }
 
   swordTip() {
     const dir      = this.facingRight ? 1 : -1;
     const hb       = HB[this.char];
     const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
-    const curReach = this.attacking ? SWORD_REACH[this.char] * growFrac : SWORD_REACH[this.char];
-    return {
-      x: this.x + dir * (hb.hw + curReach),
-      y: this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0),
-    };
+    const reach    = this.attacking ? SWORD_REACH[this.char] * growFrac : SWORD_REACH[this.char];
+    return { x: this.x + dir * (hb.hw + reach), y: this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0) };
   }
 
   bodyBox() {
-    const hb   = HB[this.char];
-    const yOff = this.crouching ? hb.hh * 0.3 : 0;
-    return {
-      left: this.x - hb.hw, right: this.x + hb.hw,
-      top:  this.y - hb.hh + yOff, bottom: this.y,
-    };
+    const hb = HB[this.char], yOff = this.crouching ? hb.hh * 0.3 : 0;
+    return { left: this.x - hb.hw, right: this.x + hb.hw, top: this.y - hb.hh + yOff, bottom: this.y };
   }
 
-  // Parry box: front-side only, from body edge outward by fw. Instant full size.
   parryBox() {
-    const hb  = HB[this.char];
-    const phb = PARRY_HB[this.char];
-    const pLeft  = this.facingRight ? this.x + hb.hw          : this.x - hb.hw - phb.fw;
-    const pRight = this.facingRight ? this.x + hb.hw + phb.fw : this.x - hb.hw;
+    const hb = HB[this.char], phb = PARRY_HB[this.char];
     return {
-      left:   pLeft,
-      right:  pRight,
+      left:   this.facingRight ? this.x + hb.hw          : this.x - hb.hw - phb.fw,
+      right:  this.facingRight ? this.x + hb.hw + phb.fw : this.x - hb.hw,
       top:    this.y - hb.hh * 0.85,
       bottom: this.y - hb.hh * 0.15,
     };
@@ -179,10 +128,9 @@ class SPlayer {
     this.deadAngle = 0; this.anim = 'death';
   }
 
-  update(dt, input) {
+  update(dt, inp) {
     if (this.dead) {
-      this.deadTimer += dt;
-      this.deadVy += 0.52; this.deadVx *= 0.96;
+      this.deadTimer += dt; this.deadVy += 0.52; this.deadVx *= 0.96;
       this.deadX += this.deadVx; this.deadY += this.deadVy;
       this.deadAngle += this.deadVx * 0.06;
       if (this.deadY >= FLOOR_Y) { this.deadY = FLOOR_Y; this.deadVy = 0; this.deadVx *= 0.7; }
@@ -192,40 +140,33 @@ class SPlayer {
 
     this.attackCd  = Math.max(0, this.attackCd  - dt);
     this.parryCd   = Math.max(0, this.parryCd   - dt);
-    this.parryTimer= Math.max(0, this.parryTimer - dt);
+    this.parryTimer = Math.max(0, this.parryTimer - dt);
 
-    // Sprint
-    const canSprint = input.sprint && this.grounded && !this.attacking && !this.parrying;
-    this.sprinting  = canSprint;
-    const speed     = canSprint ? SPRINT_SPEED : MOVE_SPEED;
-
+    const canSprint = inp.sprint && this.grounded && !this.attacking && !this.parrying;
+    this.sprinting = canSprint;
+    const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
     this.vx = 0;
-    if (input.left)  { this.vx = -speed; this.facingRight = false; }
-    if (input.right) { this.vx =  speed; this.facingRight = true;  }
+    if (inp.left)  { this.vx = -speed; this.facingRight = false; }
+    if (inp.right) { this.vx =  speed; this.facingRight = true;  }
 
-    this.crouching = !!(input.crouch && this.grounded && !this.sprinting);
+    this.crouching = !!(inp.crouch && this.grounded && !this.sprinting);
     if (this.crouching) this.vx = 0;
 
-    // Parry
-    if (input.parry && this.grounded && !this.attacking && this.parryCd <= 0 && this.parryTimer <= 0) {
-      this.parrying   = true;
-      this.parryTimer = PARRY_DUR;
-      this.parryCd    = PARRY_CD;
+    if (inp.parry && this.grounded && !this.attacking && this.parryCd <= 0 && this.parryTimer <= 0) {
+      this.parrying = true; this.parryTimer = PARRY_DUR; this.parryCd = PARRY_CD;
     }
     if (this.parryTimer <= 0) this.parrying = false;
 
-    if (input.jump && this.grounded) { this.vy = JUMP_VEL; this.grounded = false; }
+    if (inp.jump && this.grounded) { this.vy = JUMP_VEL; this.grounded = false; }
     if (!this.grounded) this.vy += GRAVITY;
-    this.x += this.vx;
-    this.y += this.vy;
+    this.x += this.vx; this.y += this.vy;
 
     if (this.y >= FLOOR_Y) { this.y = FLOOR_Y; this.vy = 0; this.grounded = true; }
     else { this.grounded = false; }
     if (this.x < 60) this.x = 60;
     if (this.x > WORLD_W - 60) this.x = WORLD_W - 60;
 
-    // Attack (blocked while parrying)
-    if (input.attack && this.attackCd <= 0 && !this.attacking && !this.parrying) {
+    if (inp.attack && this.attackCd <= 0 && !this.attacking && !this.parrying) {
       this.attacking = true; this.attackTimer = 0; this.attackCd = ATTACK_CD;
     }
     if (this.attacking) {
@@ -233,29 +174,25 @@ class SPlayer {
       if (this.attackTimer >= ATTACK_DUR[this.char]) { this.attacking = false; this.attackTimer = 0; }
     }
 
-    // Animation state (server-side — synced to client)
-    if      (this.attacking)             this.anim = 'attack';
-    else if (this.parrying)              this.anim = 'parry';
-    else if (this.crouching)             this.anim = 'crouch';
-    else if (!this.grounded)             this.anim = 'jump';
-    else if (this.sprinting)             this.anim = 'sprint';
-    else if (Math.abs(this.vx) > 0.1)   this.anim = 'walk';
-    else                                 this.anim = 'idle';
+    if      (this.attacking)           this.anim = 'attack';
+    else if (this.parrying)            this.anim = 'parry';
+    else if (this.crouching)           this.anim = 'crouch';
+    else if (!this.grounded)           this.anim = 'jump';
+    else if (this.sprinting)           this.anim = 'sprint';
+    else if (Math.abs(this.vx) > 0.1) this.anim = 'walk';
+    else                               this.anim = 'idle';
   }
 
   snapshot() {
     return {
-      id: this.id, char: this.char,
       x: this.x, y: this.y, vx: this.vx, vy: this.vy,
       grounded: this.grounded, facingRight: this.facingRight,
       alive: this.alive, dead: this.dead,
-      deadX: this.deadX, deadY: this.deadY,
-      deadAngle: this.deadAngle, deadTimer: this.deadTimer,
+      deadX: this.deadX, deadY: this.deadY, deadAngle: this.deadAngle, deadTimer: this.deadTimer,
       attacking: this.attacking, attackTimer: this.attackTimer,
-      crouching: this.crouching,
-      parrying: this.parrying, parryTimer: this.parryTimer,
-      sprinting: this.sprinting,
-      anim: this.anim, score: this.score,
+      crouching: this.crouching, parrying: this.parrying, parryTimer: this.parryTimer,
+      sprinting: this.sprinting, anim: this.anim, score: this.score,
+      seq: this.lastSeq,  // ← reconciliation anchor for client-side prediction
     };
   }
 }
@@ -267,8 +204,7 @@ class Room {
     this.inputs = { 1: blank(), 2: blank() };
     this.p1 = null; this.p2 = null;
     this.state = 'waiting'; this.round = 1;
-    this.cdVal = 3; this.cdMs = 0;
-    this.roundMs = 0; this.hitDone = false;
+    this.cdVal = 3; this.cdMs = 0; this.roundMs = 0; this.hitDone = false;
     this._timer = null; this._running = false;
     this._lastTick = 0; this._lastBroadcast = 0;
   }
@@ -286,8 +222,7 @@ class Room {
     this.p2.facingRight = false;
     this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
     this._broadcast({ type: 'start', round: this.round });
-    this._running = true;
-    this._lastTick = Date.now();
+    this._running = true; this._lastTick = Date.now();
     this._timer = setInterval(() => this._tick(), TICK_MS);
   }
 
@@ -300,16 +235,12 @@ class Room {
   }
 
   receiveInput(pid, input) {
-    // Sanitize input — only accept known fields
+    const p = pid === 1 ? this.p1 : this.p2;
     this.inputs[pid] = {
-      left:   !!input.left,
-      right:  !!input.right,
-      jump:   !!input.jump,
-      crouch: !!input.crouch,
-      attack: !!input.attack,
-      parry:  !!input.parry,
-      sprint: !!input.sprint,
+      left: !!input.left, right: !!input.right, jump: !!input.jump,
+      crouch: !!input.crouch, attack: !!input.attack, parry: !!input.parry, sprint: !!input.sprint,
     };
+    if (p && input.seq != null) p.lastSeq = input.seq;
   }
 
   _tick() {
@@ -331,10 +262,10 @@ class Room {
       if (!this.hitDone) {
         const r12 = this._checkHit(this.p1, this.p2);
         const r21 = this._checkHit(this.p2, this.p1);
-        if      (r12 === 'parried') { this._broadcast({ type: 'parried', by: 2 }); }
-        else if (r12)               { this._resolveKill(this.p1, this.p2); }
-        else if (r21 === 'parried') { this._broadcast({ type: 'parried', by: 1 }); }
-        else if (r21)               { this._resolveKill(this.p2, this.p1); }
+        if      (r12 === 'parried') this._broadcast({ type: 'parried', by: 2 });
+        else if (r12)               this._resolveKill(this.p1, this.p2);
+        else if (r21 === 'parried') this._broadcast({ type: 'parried', by: 1 });
+        else if (r21)               this._resolveKill(this.p2, this.p1);
       }
     } else if (this.state === 'round_end') {
       this.p1.update(dt, blank()); this.p2.update(dt, blank());
@@ -348,34 +279,22 @@ class Room {
     }
   }
 
-  // Returns: false (miss), true (kill), or 'parried'
   _checkHit(atk, def) {
     if (!atk.attacking || !atk.alive || !def.alive) return false;
     const tip = atk.swordTip();
-
-    // Parry checked FIRST — parry box is front-side only, full size instantly.
     if (def.parrying) {
       const pb = def.parryBox();
-      if (tip.x >= pb.left && tip.x <= pb.right &&
-          tip.y >= pb.top  && tip.y <= pb.bottom) {
-        return 'parried';
-      }
+      if (tip.x >= pb.left && tip.x <= pb.right && tip.y >= pb.top && tip.y <= pb.bottom) return 'parried';
     }
-
     const box = def.bodyBox();
-    const bodyHit = tip.x >= box.left && tip.x <= box.right &&
-                    tip.y >= box.top  && tip.y <= box.bottom;
-    return bodyHit ? true : false;
+    return (tip.x >= box.left && tip.x <= box.right && tip.y >= box.top && tip.y <= box.bottom) ? true : false;
   }
 
   _resolveKill(atk, def) {
     const dir = atk.facingRight ? 1 : -1;
     def.kill(dir); atk.score++;
     this.hitDone = true; this.state = 'round_end'; this.roundMs = 0;
-    this._broadcast({
-      type: 'kill', atk: atk.id, def: def.id,
-      scores: { 1: this.p1.score, 2: this.p2.score },
-    });
+    this._broadcast({ type: 'kill', atk: atk.id, def: def.id, scores: { 1: this.p1.score, 2: this.p2.score } });
   }
 
   _nextRound() {
@@ -391,18 +310,21 @@ class Room {
   }
 
   _sendState() {
-    this._broadcast({
-      type: 'state', state: this.state, round: this.round,
-      cdVal: this.cdVal, cdMs: this.cdMs,
-      p1: this.p1.snapshot(), p2: this.p2.snapshot(),
-    });
+    // Send personalised snapshot: each client gets "me" (with reconciliation seq)
+    // and "opp" — this avoids sending id/char fields on every tick
+    if (!this.p1 || !this.p2) return;
+    const p1s = this.p1.snapshot();
+    const p2s = this.p2.snapshot();
+    const base = { type: 'state', state: this.state, round: this.round, cdVal: this.cdVal, cdMs: this.cdMs };
+    for (const { ws, pid } of this.clients) {
+      if (ws.readyState !== 1) continue;
+      ws.send(pack({ ...base, me: pid === 1 ? p1s : p2s, opp: pid === 1 ? p2s : p1s }));
+    }
   }
 
   _broadcast(msg) {
     const s = pack(msg);
-    for (const { ws } of this.clients) {
-      if (ws.readyState === 1) ws.send(s);
-    }
+    for (const { ws } of this.clients) if (ws.readyState === 1) ws.send(s);
   }
 
   stop() {
@@ -418,8 +340,7 @@ class Room {
 }
 
 function blank() {
-  return { left:false, right:false, jump:false, crouch:false,
-           attack:false, parry:false, sprint:false };
+  return { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
 }
 function pack(o) { return JSON.stringify(o); }
 function genCode() {
@@ -429,12 +350,10 @@ function genCode() {
   return c;
 }
 
-const wss  = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
+const wss   = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 const rooms = new Map();
 
-setInterval(() => {
-  for (const ws of wss.clients) if (ws.readyState === 1) ws.ping();
-}, 20_000);
+setInterval(() => { for (const ws of wss.clients) if (ws.readyState === 1) ws.ping(); }, 20_000);
 setInterval(() => {
   for (const [code, room] of rooms)
     if (room.clients.length === 0) { room.stop(); rooms.delete(code); }
@@ -453,8 +372,8 @@ wss.on('connection', (ws) => {
       if (msg.type === 'join_room') {
         const code = (msg.code || '').toUpperCase().trim();
         const r = rooms.get(code);
-        if (!r) { ws.send(pack({ type:'error', msg:'Room not found.' })); return; }
-        if (r.clients.length >= 2) { ws.send(pack({ type:'error', msg:'Room is full.' })); return; }
+        if (!r) { ws.send(pack({ type: 'error', msg: 'Room not found.' })); return; }
+        if (r.clients.length >= 2) { ws.send(pack({ type: 'error', msg: 'Room is full.' })); return; }
         room = r; pid = 2; room.addClient(ws, pid); return;
       }
       if (!room) return;
@@ -468,4 +387,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Bandit Duel ${PORT}`));
+httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Bandit Duel :${PORT}`));
