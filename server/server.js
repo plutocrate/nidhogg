@@ -4,6 +4,7 @@ import { dirname, join, extname } from 'path';
 import * as http from 'http';
 import * as fs   from 'fs';
 import { WebSocketServer } from 'ws';
+import { createHash } from 'crypto';
 
 const __dirname  = dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = join(__dirname, '../client');
@@ -15,15 +16,61 @@ const MIME = {
   '.jpg':'image/jpeg', '.wav':'audio/wav',
   '.ico':'image/x-icon','.svg':'image/svg+xml',
 };
+// ── Cache-busting version hash ────────────────────────────────────────────────
+// Hash is computed from the content of all client JS files at startup.
+// Whenever any JS file changes (new deploy), the hash changes, forcing browsers
+// to fetch fresh copies — even if they cached the old ones.
+function computeBuildHash() {
+  const jsFiles = ['main.js', 'game.js', 'audio.js', 'input.js'];
+  const h = createHash('sha1');
+  for (const f of jsFiles) {
+    try { h.update(fs.readFileSync(join(CLIENT_DIR, f))); }
+    catch (_) {}
+  }
+  return h.digest('hex').slice(0, 12);
+}
+const BUILD_HASH = computeBuildHash();
+console.log(`[server] build hash: ${BUILD_HASH}`);
+
+// Inject ?v=HASH into main.js script tag so each deploy busts the browser cache.
+// index.html itself is served with no-cache so it always reflects the latest hash.
+function injectVersion(html) {
+  return html
+    .replace(
+      /(<script[^>]+src="main\.js)(")/,
+      `$1?v=${BUILD_HASH}$2`
+    );
+}
+
 const httpServer = http.createServer((req, res) => {
+  // Strip query string (e.g. ?v=abc123) — it exists only for cache-busting
   const urlPath  = req.url.split('?')[0];
   const filePath = join(CLIENT_DIR, urlPath === '/' ? 'index.html' : urlPath);
   const ext  = extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'application/octet-stream';
+
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not found'); return; }
+
     const headers = { 'Content-Type': mime };
-    if (ext !== '.html') headers['Cache-Control'] = 'public, max-age=3600';
+
+    if (ext === '.html') {
+      // HTML: never cache — always re-fetch so the injected hash stays current
+      headers['Cache-Control'] = 'no-store';
+      data = Buffer.from(injectVersion(data.toString()));
+    } else if (ext === '.js') {
+      // JS files: revalidate every request (304 if unchanged, full fetch if new deploy)
+      // The ?v= query string ensures a brand-new URL on every deploy, so browsers
+      // that have an old ?v= URL will always request the new one.
+      headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+      // (immutable because the URL itself changes with every deploy via ?v=HASH)
+    } else if (ext === '.png' || ext === '.wav') {
+      // Static assets (sprites, audio) rarely change — cache aggressively
+      headers['Cache-Control'] = 'public, max-age=86400';
+    } else {
+      headers['Cache-Control'] = 'no-cache';
+    }
+
     res.writeHead(200, headers);
     res.end(data);
   });
