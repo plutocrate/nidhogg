@@ -1,36 +1,4 @@
-// server/server.js — Authoritative game server
-// ─────────────────────────────────────────────────────────────────────────────
-// NETWORKING ARCHITECTURE — SERVER SIDE
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// AUTHORITY MODEL
-//   The server is the sole authority for hit detection, score, and round logic.
-//   It does NOT try to control moment-to-moment movement — that runs on both
-//   client and server simultaneously from the same physics code.
-//
-// INPUT-BASED NETWORKING
-//   Clients send { type:'input', input:{...}, seq:N } each input frame.
-//   The server applies the input to its own simulation and echoes back
-//   lastAckedSeq in every state snapshot so the client can discard inputs
-//   it has already been reconciled against.
-//
-// SNAPSHOT BROADCAST (50 Hz)
-//   Every BROADCAST_MS (20ms) the server sends a 'state' message containing:
-//     - p1, p2 positions/velocities/flags
-//     - lastAckedSeq[1], lastAckedSeq[2]
-//     - serverTime (performance.now() equivalent using Date.now())
-//   Clients use serverTime to timestamp snapshots for interpolation.
-//
-// PING / PONG
-//   Clients can send { type:'ping' }; server replies { type:'pong' } immediately.
-//   The client measures RTT and uses it for interpolation/debug display.
-//
-// AUDIO
-//   No audio events are ever sent.  Clients infer SFX from state transitions
-//   in the snapshots (e.g. attacking flag changing true→false→true).
-//
-// ─────────────────────────────────────────────────────────────────────────────
-
+// server.js — Authoritative game server
 import { fileURLToPath } from 'url';
 import { dirname, join, extname } from 'path';
 import * as http from 'http';
@@ -47,12 +15,11 @@ const MIME = {
   '.jpg':'image/jpeg', '.wav':'audio/wav',
   '.ico':'image/x-icon','.svg':'image/svg+xml',
 };
-
 const httpServer = http.createServer((req, res) => {
   const urlPath  = req.url.split('?')[0];
   const filePath = join(CLIENT_DIR, urlPath === '/' ? 'index.html' : urlPath);
-  const ext      = extname(filePath).toLowerCase();
-  const mime     = MIME[ext] || 'application/octet-stream';
+  const ext  = extname(filePath).toLowerCase();
+  const mime = MIME[ext] || 'application/octet-stream';
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not found'); return; }
     const headers = { 'Content-Type': mime };
@@ -62,34 +29,39 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GAME CONSTANTS — must mirror client/game.js exactly
-// ─────────────────────────────────────────────────────────────────────────────
-const WORLD_W    = 3200;
-const FLOOR_Y    = 460;
-const MOVE_SPEED = 5.5;
-const JUMP_VEL   = -19;
-const GRAVITY    = 0.72;
-const ATTACK_CD  = 380;
-const TICK_MS    = 1000 / 60;   // physics at 60 Hz
-const ROUND_DELAY= 2800;
-const MAX_ROUNDS = 5;
-const MAJORITY   = 3;
+// ── GAME CONSTANTS — mirror client exactly ────────────────────────────────────
+const WORLD_W     = 3200;
+const FLOOR_Y     = 460;
+const MOVE_SPEED  = 5.5;
+const SPRINT_SPEED= 9.5;
+const JUMP_VEL    = -19;
+const GRAVITY     = 0.72;
+const ATTACK_CD   = 380;
+const PARRY_DUR   = 400;     // ms parry window active
+const PARRY_CD    = 800;     // ms cooldown after parry
+const TICK_MS     = 1000 / 60;
+const ROUND_DELAY = 2800;
+const MAX_ROUNDS  = 5;
+const MAJORITY    = 3;
 
+// Hitboxes — calibrated to new 48×48 sprite sheets
+// HW/HH are half-widths in world pixels, anchor at feet (y = FLOOR_Y)
 const HB = {
-  knight: { hw: 20, hh: 50 },
-  thief:  { hw: 16, hh: 46 },
+  heavy: { hw: 22, hh: 44 },   // HeavyBandit (P1 / knight)
+  light: { hw: 20, hh: 42 },   // LightBandit (P2 / thief)
 };
-const SWORD_REACH = { knight: 62, thief: 50 };
-const ATTACK_DUR  = { knight: 500, thief: 260 };
+// Parry box: forward-facing rectangle that deflects incoming sword tips
+const PARRY_HB = {
+  heavy: { fw: 38, fh: 28 },
+  light: { fw: 34, fh: 26 },
+};
+// How far sword tip extends beyond body edge
+const SWORD_REACH = { heavy: 58, light: 52 };
+const ATTACK_DUR  = { heavy: 500, light: 280 };
 
-// How often to broadcast state to clients (ms).
-// Lower = smoother remote player, higher = less bandwidth.
-const BROADCAST_MS = 20;  // 50 Hz — good balance for 2-player duel
+const BROADCAST_MS = 20;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SPlayer — server-side player simulation
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Server Player ─────────────────────────────────────────────────────────────
 class SPlayer {
   constructor(id, x, char) {
     this.id = id; this.char = char;
@@ -100,7 +72,10 @@ class SPlayer {
     this.deadTimer = 0; this.deadVx = 0; this.deadVy = 0;
     this.deadAngle = 0; this.deadX = 0; this.deadY = 0;
     this.attacking = false; this.attackTimer = 0; this.attackCd = 0;
-    this.crouching = false; this.score = 0; this.anim = 'idle';
+    this.crouching = false;
+    this.parrying  = false; this.parryTimer = 0; this.parryCd = 0;
+    this.sprinting = false;
+    this.score = 0; this.anim = 'idle';
   }
 
   swordTip() {
@@ -115,8 +90,23 @@ class SPlayer {
   bodyBox() {
     const hb   = HB[this.char];
     const yOff = this.crouching ? hb.hh * 0.3 : 0;
-    return { left: this.x - hb.hw, right: this.x + hb.hw,
-             top:  this.y - hb.hh + yOff, bottom: this.y };
+    return {
+      left: this.x - hb.hw, right: this.x + hb.hw,
+      top:  this.y - hb.hh + yOff, bottom: this.y,
+    };
+  }
+
+  // Returns the parry deflection box (in front of defender while parrying)
+  parryBox() {
+    const hb  = HB[this.char];
+    const phb = PARRY_HB[this.char];
+    const pLeft  = this.x + (this.facingRight ? hb.hw : -(hb.hw + phb.fw));
+    return {
+      left:   pLeft,
+      right:  pLeft + phb.fw,
+      top:    this.y - hb.hh * 0.5 - phb.fh / 2,
+      bottom: this.y - hb.hh * 0.5 + phb.fh / 2,
+    };
   }
 
   kill(hitDir) {
@@ -127,8 +117,6 @@ class SPlayer {
     this.deadAngle = 0; this.anim = 'death';
   }
 
-  // Apply one physics tick given an input state.
-  // dt: elapsed ms for this tick.
   update(dt, input) {
     if (this.dead) {
       this.deadTimer += dt;
@@ -140,21 +128,42 @@ class SPlayer {
     }
     if (!this.alive) return;
 
-    this.attackCd = Math.max(0, this.attackCd - dt);
+    this.attackCd  = Math.max(0, this.attackCd  - dt);
+    this.parryCd   = Math.max(0, this.parryCd   - dt);
+    this.parryTimer= Math.max(0, this.parryTimer - dt);
+
+    // Sprint
+    const canSprint = input.sprint && this.grounded && !this.attacking && !this.parrying;
+    this.sprinting  = canSprint;
+    const speed     = canSprint ? SPRINT_SPEED : MOVE_SPEED;
+
     this.vx = 0;
-    if (input.left)  { this.vx = -MOVE_SPEED; this.facingRight = false; }
-    if (input.right) { this.vx =  MOVE_SPEED; this.facingRight = true;  }
-    this.crouching = !!(input.crouch && this.grounded);
+    if (input.left)  { this.vx = -speed; this.facingRight = false; }
+    if (input.right) { this.vx =  speed; this.facingRight = true;  }
+
+    this.crouching = !!(input.crouch && this.grounded && !this.sprinting);
     if (this.crouching) this.vx = 0;
+
+    // Parry
+    if (input.parry && this.grounded && !this.attacking && this.parryCd <= 0 && this.parryTimer <= 0) {
+      this.parrying   = true;
+      this.parryTimer = PARRY_DUR;
+      this.parryCd    = PARRY_CD;
+    }
+    if (this.parryTimer <= 0) this.parrying = false;
+
     if (input.jump && this.grounded) { this.vy = JUMP_VEL; this.grounded = false; }
     if (!this.grounded) this.vy += GRAVITY;
-    this.x += this.vx; this.y += this.vy;
+    this.x += this.vx;
+    this.y += this.vy;
+
     if (this.y >= FLOOR_Y) { this.y = FLOOR_Y; this.vy = 0; this.grounded = true; }
     else { this.grounded = false; }
     if (this.x < 60) this.x = 60;
     if (this.x > WORLD_W - 60) this.x = WORLD_W - 60;
 
-    if (input.attack && this.attackCd <= 0 && !this.attacking) {
+    // Attack (blocked while parrying)
+    if (input.attack && this.attackCd <= 0 && !this.attacking && !this.parrying) {
       this.attacking = true; this.attackTimer = 0; this.attackCd = ATTACK_CD;
     }
     if (this.attacking) {
@@ -162,11 +171,14 @@ class SPlayer {
       if (this.attackTimer >= ATTACK_DUR[this.char]) { this.attacking = false; this.attackTimer = 0; }
     }
 
-    if (this.attacking)              this.anim = 'attack';
-    else if (this.crouching)         this.anim = 'crouch';
-    else if (!this.grounded)         this.anim = 'jump';
-    else if (Math.abs(this.vx)>0.1) this.anim = 'run';
-    else                             this.anim = 'idle';
+    // Animation state (server-side — synced to client)
+    if      (this.attacking)             this.anim = 'attack';
+    else if (this.parrying)              this.anim = 'parry';
+    else if (this.crouching)             this.anim = 'crouch';
+    else if (!this.grounded)             this.anim = 'jump';
+    else if (this.sprinting)             this.anim = 'sprint';
+    else if (Math.abs(this.vx) > 0.1)   this.anim = 'walk';
+    else                                 this.anim = 'idle';
   }
 
   snapshot() {
@@ -177,34 +189,24 @@ class SPlayer {
       alive: this.alive, dead: this.dead,
       deadX: this.deadX, deadY: this.deadY,
       deadAngle: this.deadAngle, deadTimer: this.deadTimer,
-      attacking: this.attacking, attackCd: this.attackCd,
-      crouching: this.crouching, anim: this.anim, score: this.score,
+      attacking: this.attacking, crouching: this.crouching,
+      parrying: this.parrying, sprinting: this.sprinting,
+      anim: this.anim, score: this.score,
     };
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Room — manages one 2-player game instance
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Room ──────────────────────────────────────────────────────────────────────
 class Room {
   constructor(code) {
-    this.code    = code;
-    this.clients = [];
-    // Latest input per player
-    this.inputs  = { 1: blank(), 2: blank() };
-    // Last acknowledged input sequence per player (echoed back in snapshots)
-    this.lastAckedSeq = { 1: 0, 2: 0 };
-
+    this.code = code; this.clients = [];
+    this.inputs = { 1: blank(), 2: blank() };
     this.p1 = null; this.p2 = null;
-    this.state   = 'waiting';
-    this.round   = 1;
-    this.cdVal   = 3; this.cdMs = 0;
+    this.state = 'waiting'; this.round = 1;
+    this.cdVal = 3; this.cdMs = 0;
     this.roundMs = 0; this.hitDone = false;
-
-    this._timer       = null;
-    this._running     = false;
-    this._lastTick    = 0;
-    this._lastBroadcast = 0;
+    this._timer = null; this._running = false;
+    this._lastTick = 0; this._lastBroadcast = 0;
   }
 
   addClient(ws, pid) {
@@ -215,8 +217,8 @@ class Room {
   }
 
   _startMatch() {
-    this.p1 = new SPlayer(1, WORLD_W * 0.25, 'knight');
-    this.p2 = new SPlayer(2, WORLD_W * 0.75, 'thief');
+    this.p1 = new SPlayer(1, WORLD_W * 0.25, 'heavy');
+    this.p2 = new SPlayer(2, WORLD_W * 0.75, 'light');
     this.p2.facingRight = false;
     this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
     this._broadcast({ type: 'start', round: this.round });
@@ -227,18 +229,23 @@ class Room {
 
   _respawn() {
     const s1 = this.p1.score, s2 = this.p2.score;
-    this.p1 = new SPlayer(1, WORLD_W * 0.25, 'knight'); this.p1.score = s1;
-    this.p2 = new SPlayer(2, WORLD_W * 0.75, 'thief');  this.p2.score = s2;
+    this.p1 = new SPlayer(1, WORLD_W * 0.25, 'heavy'); this.p1.score = s1;
+    this.p2 = new SPlayer(2, WORLD_W * 0.75, 'light'); this.p2.score = s2;
     this.p2.facingRight = false;
     this.hitDone = false; this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
-    this.lastAckedSeq = { 1: 0, 2: 0 };
   }
 
-  // Called when a client sends an input packet.
-  // seq: the client's input sequence number for this input.
-  receiveInput(pid, input, seq) {
-    this.inputs[pid]       = input;
-    this.lastAckedSeq[pid] = seq;
+  receiveInput(pid, input) {
+    // Sanitize input — only accept known fields
+    this.inputs[pid] = {
+      left:   !!input.left,
+      right:  !!input.right,
+      jump:   !!input.jump,
+      crouch: !!input.crouch,
+      attack: !!input.attack,
+      parry:  !!input.parry,
+      sprint: !!input.sprint,
+    };
   }
 
   _tick() {
@@ -253,37 +260,47 @@ class Room {
         this.cdMs -= 1000; this.cdVal--;
         if (this.cdVal <= 0) { this.state = 'playing'; this.hitDone = false; this.cdVal = 0; }
       }
-      // Players frozen during countdown
       this.p1.update(dt, blank()); this.p2.update(dt, blank());
-
     } else if (this.state === 'playing') {
-      // Apply latest received inputs to server simulation
       this.p1.update(dt, this.inputs[1]);
       this.p2.update(dt, this.inputs[2]);
       if (!this.hitDone) {
-        if (this._checkHit(this.p1, this.p2))      this._resolveKill(this.p1, this.p2);
-        else if (this._checkHit(this.p2, this.p1)) this._resolveKill(this.p2, this.p1);
+        const r12 = this._checkHit(this.p1, this.p2);
+        const r21 = this._checkHit(this.p2, this.p1);
+        if      (r12 === 'parried') { this._broadcast({ type: 'parried', by: 2 }); }
+        else if (r12)               { this._resolveKill(this.p1, this.p2); }
+        else if (r21 === 'parried') { this._broadcast({ type: 'parried', by: 1 }); }
+        else if (r21)               { this._resolveKill(this.p2, this.p1); }
       }
-
     } else if (this.state === 'round_end') {
       this.p1.update(dt, blank()); this.p2.update(dt, blank());
       this.roundMs += dt;
       if (this.roundMs >= ROUND_DELAY) this._nextRound();
     }
 
-    // Broadcast state at 50 Hz (every BROADCAST_MS ms)
     if (now - this._lastBroadcast >= BROADCAST_MS && this.state !== 'game_over') {
       this._lastBroadcast = now;
-      this._sendState(now);
+      this._sendState();
     }
   }
 
+  // Returns: false (miss), true (kill), or 'parried'
   _checkHit(atk, def) {
     if (!atk.attacking || !atk.alive || !def.alive) return false;
     const tip = atk.swordTip();
     const box = def.bodyBox();
-    return tip.x >= box.left && tip.x <= box.right &&
-           tip.y >= box.top  && tip.y <= box.bottom;
+    const bodyHit = tip.x >= box.left && tip.x <= box.right &&
+                    tip.y >= box.top  && tip.y <= box.bottom;
+    if (!bodyHit) return false;
+
+    if (def.parrying) {
+      const pb = def.parryBox();
+      if (tip.x >= pb.left && tip.x <= pb.right &&
+          tip.y >= pb.top  && tip.y <= pb.bottom) {
+        return 'parried';
+      }
+    }
+    return true;
   }
 
   _resolveKill(atk, def) {
@@ -308,34 +325,12 @@ class Room {
     this._broadcast({ type: 'new_round', round: this.round });
   }
 
-  // Build and broadcast the authoritative state snapshot.
-  // Includes lastAckedSeq so each client knows how far to roll back prediction.
-  // Includes serverTime so the receiving client can timestamp the snapshot
-  // for interpolation purposes.
-  _sendState(now) {
-    this._broadcastSplit({
-      type: 'state',
-      state: this.state,
-      round: this.round,
-      cdVal: this.cdVal,
-      cdMs:  this.cdMs,
-      serverTime: now,        // monotonic ms timestamp from server perspective
-      p1: this.p1.snapshot(),
-      p2: this.p2.snapshot(),
-      // Each client reads the lastAckedSeq for their own pid; the other's
-      // ack is irrelevant but harmless to include.
-      lastAckedSeq: this.lastAckedSeq[1],  // P1's ack — we send both below
+  _sendState() {
+    this._broadcast({
+      type: 'state', state: this.state, round: this.round,
+      cdVal: this.cdVal, cdMs: this.cdMs,
+      p1: this.p1.snapshot(), p2: this.p2.snapshot(),
     });
-  }
-
-  // Broadcast a different message per client so each gets their own ack seq.
-  _broadcastSplit(baseMsg) {
-    for (const { ws, pid } of this.clients) {
-      if (ws.readyState !== 1) continue;
-      // Override lastAckedSeq with the value for this specific client
-      const msg = { ...baseMsg, lastAckedSeq: this.lastAckedSeq[pid] };
-      ws.send(JSON.stringify(msg));
-    }
   }
 
   _broadcast(msg) {
@@ -357,81 +352,50 @@ class Room {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-function blank() { return { left:false, right:false, jump:false, crouch:false, attack:false }; }
+function blank() {
+  return { left:false, right:false, jump:false, crouch:false,
+           attack:false, parry:false, sprint:false };
+}
 function pack(o) { return JSON.stringify(o); }
 function genCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let c = '';
-  for (let i = 0; i < 4; i++) c += chars[Math.floor(Math.random()*chars.length)];
+  for (let i = 0; i < 4; i++) c += chars[Math.floor(Math.random() * chars.length)];
   return c;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WebSocket server
-// ─────────────────────────────────────────────────────────────────────────────
-const wss = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
+const wss  = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 const rooms = new Map();
 
-// Keep connections alive with pings every 20s
 setInterval(() => {
   for (const ws of wss.clients) if (ws.readyState === 1) ws.ping();
 }, 20_000);
-
-// Clean up empty rooms every 5 minutes
 setInterval(() => {
-  for (const [code, room] of rooms) {
+  for (const [code, room] of rooms)
     if (room.clients.length === 0) { room.stop(); rooms.delete(code); }
-  }
 }, 300_000);
 
 wss.on('connection', (ws) => {
   let room = null, pid = null;
-
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-
-      // ── Room management ───────────────────────────────────────────────────
       if (msg.type === 'create_room') {
         let code; do { code = genCode(); } while (rooms.has(code));
         room = new Room(code); rooms.set(code, room); pid = 1;
         room.addClient(ws, pid); return;
       }
-
       if (msg.type === 'join_room') {
         const code = (msg.code || '').toUpperCase().trim();
         const r = rooms.get(code);
-        if (!r)                    { ws.send(pack({ type:'error', msg:'Room not found.' })); return; }
-        if (r.clients.length >= 2) { ws.send(pack({ type:'error', msg:'Room is full.'   })); return; }
+        if (!r) { ws.send(pack({ type:'error', msg:'Room not found.' })); return; }
+        if (r.clients.length >= 2) { ws.send(pack({ type:'error', msg:'Room is full.' })); return; }
         room = r; pid = 2; room.addClient(ws, pid); return;
       }
-
       if (!room) return;
-
-      // ── Input packet ──────────────────────────────────────────────────────
-      // seq: the client's monotonic sequence number for this input.
-      //      Server echoes back lastAckedSeq in next state snapshot so the
-      //      client can reconcile prediction against server state.
-      if (msg.type === 'input') {
-        const seq = (typeof msg.seq === 'number') ? msg.seq : 0;
-        room.receiveInput(pid, msg.input, seq);
-        return;
-      }
-
-      // ── Ping / Pong — RTT measurement, no game logic involved ─────────────
-      if (msg.type === 'ping') {
-        ws.send(pack({ type: 'pong' }));
-        return;
-      }
-
-    } catch (_) {
-      // Malformed JSON — silently ignore
-    }
+      if (msg.type === 'input') room.receiveInput(pid, msg.input);
+    } catch (_) {}
   });
-
   ws.on('close', () => {
     if (!room) return;
     room.removeClient(ws);
@@ -439,6 +403,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-httpServer.listen(PORT, () =>
-  console.log(`🗡️  Nidhogg Grotto Duel  http://localhost:${PORT}`)
-);
+httpServer.listen(PORT, () => console.log(`⚔️  Nidhogg Bandit Duel  http://localhost:${PORT}`));

@@ -1,39 +1,44 @@
-// audio.js — Client-side audio system
-// =============================================================================
+// audio.js — Client-side only. Zero network audio.
+// ─────────────────────────────────────────────────────────────────────────────
+// ASSETS REQUIRED in client/assets/:
+//   4__RoboTrance.wav                                     ← BGM (keep this)
+//   GRASS_-_Walk_1.wav                                    ← walk footstep loop
+//   GRASS_-_Hard_Walk_1.wav                               ← sprint footstep loop
+//   GRASS_-_Pre_Jump_5.wav                                ← jump takeoff
+//   GRASS_-_Post_Jump_5.wav                               ← jump landing
+//   WEAPSwrd_SwordStab_HoveAud_SwordCombat_01.wav         ← attack swing
+//   WEAPSwrd_SwordStabCombowRing_HoveAud_SwordCombat_11.wav ← death impact
 //
-//  ASSET TO KEEP (delete all other .wav files):
-//    assets/4__RoboTrance.wav   ← BGM, loops forever while the page is open
+// Parry clang is synthesized (no file). All other SFX load from the files above.
+// BGM volume = 17% (50% of previous 34%) so SFX cut through clearly.
 //
-//  SFX are synthesized with Tone.js — NO other audio files are needed.
-//
-//  HOW IT STARTS
-//    init() is called on the very first keydown or click anywhere on the page
-//    (wired in main.js).  That single gesture unlocks the Web AudioContext,
-//    builds all SFX instruments instantly, and begins streaming the BGM in
-//    the background.  BGM starts playing as soon as the file finishes decoding
-//    (~1-2s on a normal connection).  SFX are ready immediately.
-//
-//  NETWORK AUDIO
-//    Zero.  Nothing audio-related is ever sent or received over the network.
-//    SFX fire from local game-state transitions only (see game.js).
-//
-//  PUBLIC API (all methods are safe to call before init — they are no-ops)
-//    audio.init()                 — call once on first user gesture
-//    audio.playJump()             — short rising blip
-//    audio.playSwordSwing()       — metallic whoosh
-//    audio.playAttackGrunt()      — percussive vocal hit
-//    audio.playSwordHit()         — sharp clang
-//    audio.playDeathImpact()      — heavy thud + low drone
-//    audio.tickWalk(bool, bool)   — call every frame; drives footstep loop
-//    audio.startAmbience()        — no-op (BGM auto-starts; kept for compat)
-//    audio.stopAmbience()         — no-op (kept for compat)
-//
-// =============================================================================
+// PUBLIC API:
+//   audio.init()
+//   audio.playJump()            — takeoff sound
+//   audio.playLand()            — landing sound
+//   audio.playSwordSwing()      — attack swing
+//   audio.playAttackGrunt()     — synthesized grunt alongside swing
+//   audio.playDeathImpact()     — death sword + low thud
+//   audio.playParry()           — synthesized metallic parry clang
+//   audio.playSwordHit()        — alias → death impact clang only
+//   audio.tickWalk(moving, grounded, sprinting)
+//   audio.startAmbience()       — no-op (kept for compat)
+//   audio.stopAmbience()        — no-op (kept for compat)
+// ─────────────────────────────────────────────────────────────────────────────
 
 const BGM_URL  = 'assets/4__RoboTrance.wav';
-const TONE_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js';
+const BGM_GAIN = 0.17;   // 50% of the old 0.34
 
-// ── Load Tone.js once from CDN, cached after first load ──────────────────────
+const SFX_FILES = {
+  walk:       'assets/GRASS_-_Walk_1.wav',
+  sprint:     'assets/GRASS_-_Hard_Walk_1.wav',
+  preJump:    'assets/GRASS_-_Pre_Jump_5.wav',
+  postJump:   'assets/GRASS_-_Post_Jump_5.wav',
+  attack:     'assets/WEAPSwrd_SwordStab_HoveAud_SwordCombat_01.wav',
+  death:      'assets/WEAPSwrd_SwordStabCombowRing_HoveAud_SwordCombat_11.wav',
+};
+
+const TONE_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js';
 let _tonePromise = null;
 function loadTone() {
   if (_tonePromise) return _tonePromise;
@@ -48,260 +53,214 @@ function loadTone() {
   return _tonePromise;
 }
 
-// =============================================================================
 export class AudioManager {
   constructor() {
     this.initialized  = false;
-    this._T           = null;   // Tone namespace, set after loadTone()
+    this._ctx         = null;   // raw AudioContext
+    this._T           = null;   // Tone namespace
 
-    // BGM (uses raw Web Audio nodes so Tone instruments don't clash)
-    this._bgmBuffer   = null;
-    this._bgmSource   = null;
-    this._bgmGainNode = null;
-    this._bgmFilterNode = null;
+    // BGM chain nodes
+    this._bgmSrc      = null;
+    this._bgmGain     = null;
+    this._bgmFilter   = null;
 
-    // Tone.js SFX — each key holds a trigger function () => void
-    this._sfx         = {};
+    // Decoded SFX buffers
+    this._buf         = {};
 
-    // Walk loop (Tone.Loop)
-    this._walkLoop    = null;
+    // Walk loop state
+    this._walkNode    = null;
     this._walkPlaying = false;
+    this._walkKey     = null;   // 'walk' | 'sprint' — tracks which is playing
+
+    // Tone.js synth triggers (parry clang, grunt, death thud)
+    this._synth       = {};
   }
 
-  // ── Initialise on first user gesture ─────────────────────────────────────
+  // ── Must be called on first user gesture ─────────────────────────────────
   async init()      { await this.initAudio(); }
   async initAudio() {
     if (this.initialized) return;
-    this.initialized = true;   // guard against double-call
-
+    this.initialized = true;
     try {
-      // 1. Load Tone.js from CDN (cached after first load, ~90 KB gzipped)
+      // Load Tone for synthesized SFX
       this._T = await loadTone();
+      await this._T.start();                    // unlock AudioContext on gesture
+      this._ctx = this._T.context.rawContext;   // share one context everywhere
 
-      // 2. Unlock the AudioContext — MUST be inside the gesture handler
-      await this._T.start();
-
-      // 3. Build SFX instruments synchronously (no async — ready immediately)
-      this._buildSFX();
-
-      // 4. Fetch + decode BGM in background — does not block SFX
-      this._startBGM();
-
+      this._buildBGMChain();
+      this._buildSynths();
+      this._loadSFX();    // non-blocking — files load in background
+      this._startBGM();   // non-blocking — streams BGM
     } catch (e) {
       console.warn('[audio] init error:', e);
       this.initialized = false;
     }
   }
 
-  // Kept for API compatibility with game.js — BGM runs for page lifetime
-  startAmbience() {}
-  stopAmbience()  {}
+  startAmbience() {}   // no-op — BGM auto-starts on init
+  stopAmbience()  {}   // no-op — BGM runs for page lifetime
 
-  // ===========================================================================
-  // SFX — built with Tone.js, zero latency after init
-  // ===========================================================================
-  _buildSFX() {
-    const T = this._T;
-
-    // Shared output limiter prevents clipping when multiple SFX overlap
-    const out = new T.Limiter(-2).toDestination();
-
-    // ── JUMP — bright rising pitch blip ─────────────────────────────────────
-    // PolySynth so rapid presses don't choke each other
-    const jumpSynth = new T.PolySynth(T.Synth, {
-      oscillator : { type: 'triangle' },
-      envelope   : { attack: 0.005, decay: 0.13, sustain: 0, release: 0.04 },
-      volume     : -10,
-    }).connect(out);
-
-    this._sfx.jump = () => {
-      const now = T.now();
-      // Start at C5, glide up to G5 — gives a springy "boing" feel
-      jumpSynth.triggerAttack('C5', now);
-      jumpSynth.triggerRelease(['C5'], now + 0.13);
-    };
-
-    // ── SWORD SWING — brown-noise whoosh through sweeping bandpass ──────────
-    const swingNoise = new T.NoiseSynth({
-      noise    : { type: 'brown' },
-      envelope : { attack: 0.008, decay: 0.20, sustain: 0, release: 0.06 },
-      volume   : -7,
-    });
-    const swingBP = new T.Filter({ type: 'bandpass', Q: 2.5 }).connect(out);
-    swingNoise.connect(swingBP);
-
-    this._sfx.swing = () => {
-      const now = T.now();
-      // Sweep bandpass 300 Hz → 3000 Hz to simulate blade arc
-      swingBP.frequency.setValueAtTime(300, now);
-      swingBP.frequency.exponentialRampTo(3000, 0.18, now);
-      swingNoise.triggerAttackRelease('16n', now);
-    };
-
-    // ── ATTACK GRUNT — low pitched membrane thump ───────────────────────────
-    const gruntSynth = new T.MembraneSynth({
-      pitchDecay : 0.045,
-      octaves    : 4,
-      envelope   : { attack: 0.001, decay: 0.09, sustain: 0, release: 0.05 },
-      volume     : -13,
-    }).connect(out);
-
-    this._sfx.grunt = () => {
-      gruntSynth.triggerAttackRelease('G2', '32n');
-    };
-
-    // ── SWORD HIT — sharp metallic clang ────────────────────────────────────
-    const hitMetal = new T.MetalSynth({
-      frequency      : 420,
-      envelope       : { attack: 0.001, decay: 0.22, release: 0.08 },
-      harmonicity    : 5.1,
-      modulationIndex: 16,
-      resonance      : 3800,
-      octaves        : 1.5,
-      volume         : -7,
-    }).connect(out);
-
-    this._sfx.hit = () => {
-      hitMetal.triggerAttackRelease('32n');
-    };
-
-    // ── DEATH IMPACT — heavy thud + descending drone ─────────────────────────
-    // Layer 1: deep membrane thud
-    const deathThud = new T.MembraneSynth({
-      pitchDecay : 0.09,
-      octaves    : 6,
-      envelope   : { attack: 0.001, decay: 0.40, sustain: 0, release: 0.2 },
-      volume     : -5,
-    }).connect(out);
-
-    // Layer 2: descending sine tone — the "life leaving the body" drone
-    const deathDrone = new T.PolySynth(T.Synth, {
-      oscillator : { type: 'sine' },
-      envelope   : { attack: 0.02, decay: 0.55, sustain: 0, release: 0.25 },
-      volume     : -17,
-    }).connect(out);
-
-    this._sfx.death = () => {
-      const now = T.now();
-      deathThud.triggerAttackRelease('C1', '8n', now);
-      // Scream tail starts slightly after the thud
-      deathDrone.triggerAttack('A3', now + 0.06);
-      deathDrone.releaseAll(now + 0.60);
-    };
-
-    // ── WALK FOOTSTEP — pink-noise click, looped while moving ───────────────
-    const walkNoise = new T.NoiseSynth({
-      noise    : { type: 'pink' },
-      envelope : { attack: 0.001, decay: 0.03, sustain: 0, release: 0.01 },
-      volume   : -24,
-    });
-    const walkLP = new T.Filter({ type: 'lowpass', frequency: 700 }).connect(out);
-    walkNoise.connect(walkLP);
-
-    // Loop fires every 8th note (at 120BPM = 250ms) — running cadence
-    this._walkLoop = new T.Loop((time) => {
-      walkNoise.triggerAttackRelease('32n', time);
-    }, '8n');
-    this._walkLoop.humanize = 0.012; // tiny random variation avoids robotic feel
+  // ── BGM ────────────────────────────────────────────────────────────────────
+  _buildBGMChain() {
+    const ctx = this._ctx;
+    // BGM goes: source → lowpass (warm) → gain → destination
+    this._bgmFilter = ctx.createBiquadFilter();
+    this._bgmFilter.type = 'lowpass';
+    this._bgmFilter.frequency.value = 14000;
+    this._bgmGain = ctx.createGain();
+    this._bgmGain.gain.value = BGM_GAIN;
+    this._bgmFilter.connect(this._bgmGain);
+    this._bgmGain.connect(ctx.destination);
   }
 
-  // ===========================================================================
-  // BGM — streams 4__RoboTrance.wav, loops forever
-  // ===========================================================================
   async _startBGM() {
     try {
-      // Use Tone's raw AudioContext so BGM and SFX share the same graph
-      const ctx = this._T.context.rawContext;
-
-      // BGM chain: source → lowpass → gain → destination
-      // Low-pass keeps it warm and lets SFX punch through
-      this._bgmFilterNode = ctx.createBiquadFilter();
-      this._bgmFilterNode.type = 'lowpass';
-      this._bgmFilterNode.frequency.value = 14000;
-
-      this._bgmGainNode = ctx.createGain();
-      this._bgmGainNode.gain.value = 0.34; // quiet enough for SFX to cut through
-
-      this._bgmFilterNode.connect(this._bgmGainNode);
-      this._bgmGainNode.connect(ctx.destination);
-
-      // Fetch and decode the BGM file
-      const res = await fetch(BGM_URL);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const ab  = await res.arrayBuffer();
-      this._bgmBuffer = await ctx.decodeAudioData(ab);
-
-      // Start playback — loop forever
-      const src    = ctx.createBufferSource();
-      src.buffer   = this._bgmBuffer;
-      src.loop     = true;
-      src.connect(this._bgmFilterNode);
+      const buf = await this._fetch(BGM_URL);
+      if (this._bgmSrc) return;
+      const src  = this._ctx.createBufferSource();
+      src.buffer = buf; src.loop = true;
+      src.connect(this._bgmFilter);
       src.start(0);
-      this._bgmSource = src;
-
-    } catch (e) {
-      console.warn('[audio] BGM failed to load:', e);
-    }
+      this._bgmSrc = src;
+    } catch (e) { console.warn('[audio] BGM failed:', e); }
   }
 
-  // ===========================================================================
-  // PUBLIC SFX TRIGGERS
-  // All guarded — safe to call before init() or if Tone failed to load.
-  // ===========================================================================
-
-  // Fires immediately on jump keypress — before server round-trip (prediction)
-  playJump() {
-    if (!this.initialized || !this._sfx.jump) return;
-    try { this._sfx.jump(); } catch (_) {}
+  // ── SFX file loading ──────────────────────────────────────────────────────
+  async _loadSFX() {
+    await Promise.allSettled(
+      Object.entries(SFX_FILES).map(async ([key, url]) => {
+        try   { this._buf[key] = await this._fetch(url); }
+        catch (e) { console.warn('[audio] SFX load failed:', key, e); }
+      })
+    );
   }
 
-  // Fires when local attack starts, or when remote player's attacking flag
-  // transitions false → true (inferred from snapshot diff — no network audio)
-  playSwordSwing() {
-    if (!this.initialized || !this._sfx.swing) return;
-    try { this._sfx.swing(); } catch (_) {}
+  async _fetch(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return this._ctx.decodeAudioData(await res.arrayBuffer());
   }
 
-  // Short grunt that accompanies the swing
-  playAttackGrunt() {
-    if (!this.initialized || !this._sfx.grunt) return;
-    try { this._sfx.grunt(); } catch (_) {}
+  // Fire a decoded buffer once at given volume (0–1)
+  _play(key, vol = 1, delayS = 0) {
+    const buf = this._buf[key];
+    if (!buf || !this._ctx) return;
+    if (this._ctx.state === 'suspended') this._ctx.resume();
+    const src  = this._ctx.createBufferSource();
+    src.buffer = buf;
+    const g    = this._ctx.createGain();
+    g.gain.value = vol;
+    src.connect(g); g.connect(this._ctx.destination);
+    src.start(this._ctx.currentTime + delayS);
   }
 
-  // Metal clang — sword connecting with body (used by playSwordHit callers)
-  playSwordHit() {
-    if (!this.initialized || !this._sfx.hit) return;
-    try { this._sfx.hit(); } catch (_) {}
+  // ── Tone.js synthesized sounds ────────────────────────────────────────────
+  // Only for sounds with no asset file: parry clang, attack grunt, death thud.
+  _buildSynths() {
+    const T   = this._T;
+    const out = new T.Limiter(-2).toDestination();
+
+    // Attack grunt — short low membrane hit alongside swing
+    const grunt = new T.MembraneSynth({
+      pitchDecay : 0.04, octaves: 4,
+      envelope   : { attack:0.001, decay:0.09, sustain:0, release:0.04 },
+      volume     : -14,
+    }).connect(out);
+    this._synth.grunt = () => { try { grunt.triggerAttackRelease('G2','32n'); } catch(_){} };
+
+    // Parry — sharp metallic clang
+    const parry = new T.MetalSynth({
+      frequency: 300,
+      envelope  : { attack:0.001, decay:0.28, release:0.1 },
+      harmonicity:3.0, modulationIndex:12,
+      resonance:3000, octaves:1.1, volume:-6,
+    }).connect(out);
+    this._synth.parry = () => { try { parry.triggerAttackRelease('16n'); } catch(_){} };
+
+    // Death thud — heavy low impact body hit (layered under death sword)
+    const thud = new T.MembraneSynth({
+      pitchDecay : 0.09, octaves: 6,
+      envelope   : { attack:0.001, decay:0.38, sustain:0, release:0.18 },
+      volume     : -6,
+    }).connect(out);
+    this._synth.thud = () => { try { thud.triggerAttackRelease('C1','8n'); } catch(_){} };
   }
 
-  // Death: hit clang as the killing blow lands, followed by thud + drone
+  // ── PUBLIC SFX API ────────────────────────────────────────────────────────
+
+  /** Grass pre-jump (takeoff) — called when jump is pressed while grounded */
+  playJump() { this._play('preJump', 0.85); }
+
+  /** Grass post-jump (landing) — called when player touches floor */
+  playLand() { this._play('postJump', 0.80); }
+
+  /** Attack swing from file */
+  playSwordSwing() { this._play('attack', 0.88); }
+
+  /** Short grunt alongside attack */
+  playAttackGrunt() { this._synth.grunt?.(); }
+
+  /** Death: sword stab sound + body thud 80ms later */
   playDeathImpact() {
-    if (!this.initialized) return;
-    try { if (this._sfx.hit)   this._sfx.hit();   } catch (_) {}
-    try { if (this._sfx.death) this._sfx.death();  } catch (_) {}
+    this._play('death', 0.90);
+    setTimeout(() => this._synth.thud?.(), 80);
   }
 
-  // ===========================================================================
-  // WALK LOOP
-  // Call every game frame from game.js.
-  // Starts looping footstep ticks while the player is moving on the ground,
-  // stops cleanly when they stop or jump.
-  //
-  // @param {boolean} moving   — true when |vx| > 0.1
-  // @param {boolean} grounded — true when player is on the floor
-  // ===========================================================================
-  tickWalk(moving, grounded) {
-    if (!this.initialized || !this._walkLoop) return;
+  /** Parry clang — synthesized metallic ring */
+  playParry() { this._synth.parry?.(); }
+
+  /** Sword hit (reuses death stab — a strong clang) */
+  playSwordHit() { this._play('death', 0.75); }
+
+  // ── WALK / SPRINT LOOP ────────────────────────────────────────────────────
+  // Call every game frame.
+  // @param {boolean} moving    — |vx| > 0.1
+  // @param {boolean} grounded  — on the floor
+  // @param {boolean} sprinting — sprint key held
+  tickWalk(moving, grounded, sprinting = false) {
+    if (!this._ctx) return;
     const should = moving && grounded;
+    const key    = sprinting ? 'sprint' : 'walk';
+    const vol    = sprinting ? 0.75 : 0.55;
+
+    // If sprinting mode flipped while loop is running, restart with correct sound
+    if (this._walkPlaying && should && key !== this._walkKey) {
+      this._stopWalk();
+    }
 
     if (should && !this._walkPlaying) {
-      // Tone.Transport must be running for Tone.Loop to fire
-      this._T.getTransport().start();
-      this._walkLoop.start(0);
-      this._walkPlaying = true;
+      this._startWalk(key, vol);
     } else if (!should && this._walkPlaying) {
-      this._walkLoop.stop();
-      this._walkPlaying = false;
+      this._stopWalk();
     }
+  }
+
+  _startWalk(key, vol) {
+    const buf = this._buf[key];
+    if (!buf || this._walkPlaying) return;
+    const src  = this._ctx.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    const g    = this._ctx.createGain();
+    g.gain.value = vol;
+    src.connect(g); g.connect(this._ctx.destination);
+    src.start();
+    this._walkNode    = { src, g };
+    this._walkPlaying = true;
+    this._walkKey     = key;
+    src.onended = () => { this._walkPlaying = false; this._walkNode = null; };
+  }
+
+  _stopWalk() {
+    if (!this._walkPlaying || !this._walkNode) return;
+    try {
+      const { g, src } = this._walkNode;
+      const now = this._ctx.currentTime;
+      g.gain.setValueAtTime(g.gain.value, now);
+      g.gain.linearRampToValueAtTime(0, now + 0.04);
+      src.stop(now + 0.04);
+    } catch (_) {}
+    this._walkPlaying = false;
+    this._walkKey     = null;
+    this._walkNode    = null;
   }
 }

@@ -1,27 +1,35 @@
 // input.js — Input manager
-// Online mode: both players use WASD+J (each on their own machine)
-// Local mode: P1 = WASD+J, P2 = Arrows+Num0
+// Online: P1 uses WASD + J(attack) + K(parry) + LShift(sprint)
+// Local:  P1 = above,  P2 = Arrows + L(attack) + ;(parry) + RShift(sprint)
 
 const KEY_MAP_P1 = {
-  'KeyA': 'left',  'KeyD': 'right',
-  'KeyW': 'jump',  'KeyS': 'crouch',
-  'KeyJ': 'attack',
+  'KeyA':      'left',
+  'KeyD':      'right',
+  'KeyW':      'jump',
+  'KeyS':      'crouch',
+  'KeyJ':      'attack',
+  'KeyK':      'parry',
+  'ShiftLeft': 'sprint',
 };
 
-// P2 local-only controls (arrows)
+// P2 local-only controls (arrow keys cluster)
 const KEY_MAP_P2_LOCAL = {
-  'ArrowLeft': 'left',  'ArrowRight': 'right',
-  'ArrowUp':   'jump',  'ArrowDown':  'crouch',
-  'Numpad0':   'attack', 'Slash': 'attack',
-  'NumpadDecimal': 'attack', 'Numpad1': 'attack',
+  'ArrowLeft':    'left',
+  'ArrowRight':   'right',
+  'ArrowUp':      'jump',
+  'ArrowDown':    'crouch',
+  'KeyL':         'attack',      // L = attack for P2
+  'Semicolon':    'parry',       // ; = parry for P2
+  'ShiftRight':   'sprint',      // RShift = sprint for P2
+  // Legacy / numpad fallbacks
+  'Numpad0':      'attack',
+  'NumpadDecimal':'attack',
+  'Numpad1':      'attack',
 };
 
 export class InputManager {
   /**
    * @param {'online'|'local'|'tutorial'} mode
-   *   online   — only P1 map active (WASD+J).  P2 input sent by their client.
-   *   local    — both P1 and P2 maps active on one keyboard
-   *   tutorial — only P1 map active
    */
   constructor(mode = 'online') {
     this.mode = mode;
@@ -34,10 +42,12 @@ export class InputManager {
     window.addEventListener('keyup',   this._onKeyUp);
   }
 
-  _blank() { return { left:false, right:false, jump:false, crouch:false, attack:false }; }
+  _blank() {
+    return { left:false, right:false, jump:false, crouch:false,
+             attack:false, parry:false, sprint:false };
+  }
 
   _onKeyDown(e) {
-    // Don't preventDefault globally — let ESC etc. bubble
     const a1 = KEY_MAP_P1[e.code];
     if (a1) {
       e.preventDefault();
@@ -45,7 +55,6 @@ export class InputManager {
       this.p1[a1] = true;
     }
 
-    // P2 local controls only in local/tutorial mode
     if (this.mode === 'local' || this.mode === 'tutorial') {
       const a2 = KEY_MAP_P2_LOCAL[e.code];
       if (a2) {
