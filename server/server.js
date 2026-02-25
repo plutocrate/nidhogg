@@ -44,8 +44,19 @@ function injectVersion(html) {
 
 const httpServer = http.createServer((req, res) => {
   // Strip query string (e.g. ?v=abc123) — it exists only for cache-busting
-  const urlPath  = req.url.split('?')[0];
-  const filePath = join(CLIENT_DIR, urlPath === '/' ? 'index.html' : urlPath);
+	let urlPath = req.url.split('?')[0];
+
+// remove leading slash ❗❗❗
+if (urlPath.startsWith('/')) {
+  urlPath = urlPath.slice(1);
+}
+
+// default route
+if (urlPath === '') {
+  urlPath = 'index.html';
+}
+
+const filePath = join(CLIENT_DIR, urlPath);
   const ext  = extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'application/octet-stream';
 
