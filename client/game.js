@@ -5,7 +5,6 @@ import { AudioManager }  from './audio.js';
 // ── Constants (must mirror server exactly) ────────────────────────────────────
 const WORLD_W        = 3200;
 const FLOOR_Y        = 460;
-const MOVE_SPEED     = 5.5;
 const SPRINT_SPEED   = 9.5;
 const JUMP_VEL       = -19;
 const GRAVITY        = 0.72;
@@ -56,7 +55,6 @@ const DEFS = {
     src: 'assets/HeavyBandit.png', fw: 48, fh: 48,
     anims: {
       idle:   { row:0, frames:[0],               fps:4,  loop:true  },
-      walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:27, loop:true  },
       run:    { row:1, frames:[0,1,2,3,4,5,6,7], fps:13, loop:true  },
       sprint: { row:1, frames:[0,1,2,3,4,5,6,7], fps:18, loop:true  },
       jump:   { row:2, frames:[0],               fps:4,  loop:true  },
@@ -70,7 +68,6 @@ const DEFS = {
     src: 'assets/LightBandit.png', fw: 48, fh: 48,
     anims: {
       idle:   { row:0, frames:[0],               fps:4,  loop:true  },
-      walk:   { row:0, frames:[0,1,2,3,4,5,6,7], fps:27, loop:true  },
       run:    { row:1, frames:[0,1,2,3,4,5,6,7], fps:13, loop:true  },
       sprint: { row:1, frames:[0,1,2,3,4,5,6,7], fps:18, loop:true  },
       jump:   { row:2, frames:[0],               fps:4,  loop:true  },
@@ -364,8 +361,7 @@ function _calcAnim(p) {
   if (p.parrying)            return 'parry';
   if (p.crouching)           return 'crouch';
   if (!p.grounded)           return 'jump';
-  if (p.sprinting)           return 'sprint';
-  if (Math.abs(p.vx) > 0.1) return 'walk';
+  if (Math.abs(p.vx) > 0.1) return 'sprint'; // always sprint anim when moving
   return 'idle';
 }
 
@@ -378,19 +374,19 @@ function applyPhysics(p, inp, dt, audio) {
   p.parryCd    = Math.max(0, p.parryCd    - dt);
   p.parryTimer = Math.max(0, p.parryTimer - dt);
 
-  const canSprint = inp.sprint && p.grounded && !p.attacking && !p.parrying;
-  p.sprinting = canSprint;
-  const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
+  // Always sprint — no shift key needed
+  p.sprinting = !p.attacking && !p.parrying;
+  const speed = SPRINT_SPEED;
 
   const prevFacing = p.facingRight;
   p.vx = 0;
   if (inp.left)  { p.vx = -speed; p.facingRight = false; }
   if (inp.right) { p.vx =  speed; p.facingRight = true;  }
 
-  p.crouching = !!(inp.crouch && p.grounded && !p.sprinting);
+  p.crouching = !!(inp.crouch && p.grounded);
   if (p.crouching) p.vx = 0;
 
-  if (inp.parry && p.grounded && !p.attacking && p.parryCd <= 0 && p.parryTimer <= 0) {
+  if (inp.parry && !p.attacking && p.parryCd <= 0 && p.parryTimer <= 0) {
     p.parrying = true; p.parryTimer = PARRY_DUR; p.parryCd = PARRY_CD;
     if (audio) audio.playParry();
   }
@@ -428,18 +424,15 @@ function applyPhysics(p, inp, dt, audio) {
   const newAnim = _calcAnim(p);
 
   if (newAnim === 'attack' && !wasAttacking) {
-    // Fresh attack — always reset to frame 0
     p.sprite.play('attack', true);
-  } else if ((newAnim === 'walk' || newAnim === 'sprint') && newAnim !== p._prevAnim) {
-    // Switched into walk/sprint — restart animation from frame 0 for visual clarity
-    p.sprite.play(newAnim, true);
+  } else if (newAnim === 'sprint' && newAnim !== p._prevAnim) {
+    p.sprite.play('sprint', true);
   } else if (newAnim !== p._prevAnim) {
     p.sprite.play(newAnim);
   }
-  // If same anim continues, don't call play() — let update() loop it naturally
 
   p._prevAnim = newAnim;
-  if (audio) audio.tickWalk(Math.abs(p.vx) > 0.1, p.grounded, p.sprinting);
+  if (audio) audio.tickWalk(Math.abs(p.vx) > 0.1, p.grounded);
 }
 
 // ── Opponent snapshot buffer (interpolation) ──────────────────────────────────
@@ -547,14 +540,19 @@ export class Game {
 
   start() {
     this.running = true;
-    // Ensure audio is unlocked — preloadAll() is idempotent
     if (!this.audio.initialized) {
       this.audio.preloadAll().catch(() => {});
-    } else {
-      // AudioContext may have auto-suspended (e.g. host waited in lobby with no sound).
-      // resume() re-wakes it without rebuilding synths — no latency cost.
-      this.audio.resume().catch(() => {});
     }
+    // Host audio fix: the game is launched via ws.onmessage (not a user gesture),
+    // so Tone.start() called there won't unlock the AudioContext. Instead, hook
+    // the very first in-game keypress which IS a genuine user gesture.
+    this._resumeOnGesture = () => {
+      this.audio.resume().catch(() => {});
+      window.removeEventListener('keydown', this._resumeOnGesture);
+      this._resumeOnGesture = null;
+    };
+    window.addEventListener('keydown', this._resumeOnGesture);
+
     this._hitboxKey = (e) => { if (e.code === 'Backslash') this._showHitboxes = !this._showHitboxes; };
     window.addEventListener('keydown', this._hitboxKey);
     this._last = performance.now();
@@ -568,6 +566,7 @@ export class Game {
     this.audio.stopAmbience();
     this.input.destroy();
     if (this._hitboxKey) window.removeEventListener('keydown', this._hitboxKey);
+    if (this._resumeOnGesture) { window.removeEventListener('keydown', this._resumeOnGesture); this._resumeOnGesture = null; }
     if (this.ws) { try { this.ws.close(); } catch (_) {} this.ws = null; }
   }
 
@@ -754,7 +753,7 @@ export class Game {
     if (this.state === 'playing' || this.state === 'countdown') {
       const inpCopy = this.state === 'playing'
         ? { ...this.input.p1 }
-        : { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
+        : { left:false, right:false, jump:false, crouch:false, attack:false, parry:false };
 
       this._seq++;
       this._inputHist.push({ seq: this._seq, inp: inpCopy });
@@ -1019,7 +1018,7 @@ export class Game {
 
     if (this.mode === 'tutorial') {
       const lines = [
-        'A/D Move  W Jump  S Crouch  J Attack  K Parry  LShift Sprint',
+        'A/D Move  W Jump  S Crouch  J Attack  K Parry',
         'Get close and thrust — one hit kills!',
         'Watch your spacing. First strike wins.',
       ];

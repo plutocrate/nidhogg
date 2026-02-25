@@ -64,7 +64,6 @@ const httpServer = http.createServer((req, res) => {
 // ── GAME CONSTANTS — must mirror client exactly ────────────────────────────────
 const WORLD_W        = 3200;
 const FLOOR_Y        = 460;
-const MOVE_SPEED     = 5.5;
 const SPRINT_SPEED   = 9.5;
 const JUMP_VEL       = -19;
 const GRAVITY        = 0.72;
@@ -178,17 +177,17 @@ class SPlayer {
     this.parryCd    = Math.max(0, this.parryCd    - dt);
     this.parryTimer = Math.max(0, this.parryTimer - dt);
 
-    const canSprint = inp.sprint && this.grounded && !this.attacking && !this.parrying;
-    this.sprinting = canSprint;
-    const speed = canSprint ? SPRINT_SPEED : MOVE_SPEED;
+    // Always sprint — no shift key required
+    this.sprinting = !this.attacking && !this.parrying;
+    const speed = SPRINT_SPEED;
     this.vx = 0;
     if (inp.left)  { this.vx = -speed; this.facingRight = false; }
     if (inp.right) { this.vx =  speed; this.facingRight = true;  }
 
-    this.crouching = !!(inp.crouch && this.grounded && !this.sprinting);
+    this.crouching = !!(inp.crouch && this.grounded);
     if (this.crouching) this.vx = 0;
 
-    if (inp.parry && this.grounded && !this.attacking && this.parryCd <= 0 && this.parryTimer <= 0) {
+    if (inp.parry && !this.attacking && this.parryCd <= 0 && this.parryTimer <= 0) {
       this.parrying = true; this.parryTimer = PARRY_DUR; this.parryCd = PARRY_CD;
     }
     if (this.parryTimer <= 0) this.parrying = false;
@@ -214,8 +213,7 @@ class SPlayer {
     else if (this.parrying)            this.anim = 'parry';
     else if (this.crouching)           this.anim = 'crouch';
     else if (!this.grounded)           this.anim = 'jump';
-    else if (this.sprinting)           this.anim = 'sprint';
-    else if (Math.abs(this.vx) > 0.1) this.anim = 'walk';
+    else if (Math.abs(this.vx) > 0.1) this.anim = 'sprint';
     else                               this.anim = 'idle';
   }
 
@@ -434,7 +432,7 @@ class Room {
 }
 
 function blank() {
-  return { left:false, right:false, jump:false, crouch:false, attack:false, parry:false, sprint:false };
+  return { left:false, right:false, jump:false, crouch:false, attack:false, parry:false };
 }
 function pack(o) { return JSON.stringify(o); }
 function genCode() {

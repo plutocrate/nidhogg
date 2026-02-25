@@ -50,7 +50,6 @@ export class AudioManager {
     this._deathSynth  = null;
     this._walkLoop    = null;
     this._walkActive  = false;
-    this._walkKey     = null; // 'walk' | 'sprint'
   }
 
   // ── PRELOAD (idempotent) ─────────────────────────────────────────────────
@@ -176,12 +175,7 @@ export class AudioManager {
 
     // ── WALK — subtle rhythmic low click (looped via Tone.Loop)
     // We use a very short noise burst on a schedule rather than looped audio.
-    this._walkNoise = new T.NoiseSynth({
-      noise        : { type: 'brown' },
-      envelope     : { attack: 0.001, decay: 0.055, sustain: 0, release: 0.02 },
-      volume       : -28,
-    }).toDestination();
-
+    // ── FOOTSTEPS — sprint footstep loop (walk removed, always sprint)
     this._walkNoiseFast = new T.NoiseSynth({
       noise        : { type: 'brown' },
       envelope     : { attack: 0.001, decay: 0.04, sustain: 0, release: 0.015 },
@@ -190,11 +184,8 @@ export class AudioManager {
 
     this._walkLoop = new T.Loop((time) => {
       if (!this._walkActive) return;
-      const synth = this._walkKey === 'sprint' ? this._walkNoiseFast : this._walkNoise;
-      synth.triggerAttackRelease('8n', time);
+      this._walkNoiseFast.triggerAttackRelease('8n', time);
     }, '8n');
-
-    // Don't start loop yet — _startWalk() handles that
   }
 
   // ── PUBLIC SFX API ───────────────────────────────────────────────────────
@@ -254,35 +245,29 @@ export class AudioManager {
   // Alias — same heavy impact sound for a sword hit
   playSwordHit() { this.playDeathImpact(); }
 
-  // ── WALK / SPRINT LOOP ───────────────────────────────────────────────────
-  // Called every game frame. Server-independent — runs only in the browser.
+  // ── FOOTSTEP LOOP ────────────────────────────────────────────────────────
+  // Called every game frame. Plays sprint footstep sound when moving on ground.
 
-  tickWalk(moving, grounded, sprinting = false) {
+  tickWalk(moving, grounded) {
     if (!this._walkLoop) return;
     const should = moving && grounded;
-    const key    = sprinting ? 'sprint' : 'walk';
-
     if (!should) {
       if (this._walkActive) this._stopWalk();
       return;
     }
-    if (this._walkActive && this._walkKey !== key) this._stopWalk();
-    if (!this._walkActive) this._startWalk(key);
+    if (!this._walkActive) this._startWalk();
   }
 
-  _startWalk(key) {
+  _startWalk() {
     if (this._walkActive) return;
-    this._walkKey    = key;
     this._walkActive = true;
-    this._walkLoop.interval = key === 'sprint' ? '8n' : '4n';
+    this._walkLoop.interval = '8n';
     this._walkLoop.start(0);
     this._T.Transport.start();
   }
 
   _stopWalk() {
     this._walkActive = false;
-    this._walkKey    = null;
-    // Don't stop Transport — other things may use it. Just let loop fire silently.
     this._walkLoop.stop();
   }
 

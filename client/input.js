@@ -1,6 +1,6 @@
 // input.js — Input manager
-// Online: P1 uses WASD + J(attack) + K(parry) + LShift(sprint)
-// Local:  P1 = above,  P2 = Arrows + L(attack) + ;(parry) + RShift(sprint)
+// Online: P1 uses WASD + J(attack) + K(parry)
+// Local:  P1 = above,  P2 = Arrows + L(attack) + ;(parry)
 
 const KEY_MAP_P1 = {
   'KeyA':      'left',
@@ -9,7 +9,6 @@ const KEY_MAP_P1 = {
   'KeyS':      'crouch',
   'KeyJ':      'attack',
   'KeyK':      'parry',
-  'ShiftLeft': 'sprint',
 };
 
 // P2 local-only controls (arrow keys cluster)
@@ -18,9 +17,8 @@ const KEY_MAP_P2_LOCAL = {
   'ArrowRight':   'right',
   'ArrowUp':      'jump',
   'ArrowDown':    'crouch',
-  'KeyL':         'attack',      // L = attack for P2
-  'Semicolon':    'parry',       // ; = parry for P2
-  'ShiftRight':   'sprint',      // RShift = sprint for P2
+  'KeyL':         'attack',
+  'Semicolon':    'parry',
   // Legacy / numpad fallbacks
   'Numpad0':      'attack',
   'NumpadDecimal':'attack',
@@ -44,7 +42,7 @@ export class InputManager {
 
   _blank() {
     return { left:false, right:false, jump:false, crouch:false,
-             attack:false, parry:false, sprint:false };
+             attack:false, parry:false };
   }
 
   _onKeyDown(e) {
