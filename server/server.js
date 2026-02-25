@@ -1,10 +1,7 @@
-// server.js — Authoritative game server (Krunker-grade rewrite)
-// Key fixes:
-//   1. setInterval at exactly TICK_MS — no setImmediate spin loop burning CPU
-//   2. Per-player input QUEUE (not overwrite) — attack/jump/parry edges never dropped
-//   3. Hit detection runs every tick while attacking — hits can't be missed
-//   4. State broadcast at 60Hz — host player sees himself with zero extra lag
-//   5. Ping/RTT measurement so clients can calibrate
+// server.js — Authoritative game server
+// Physics: 60Hz fixed tick
+// State broadcast: 20Hz (every 3rd tick) — prevents flooding the WS queue
+// Kill/parried events: sent immediately, outside the state broadcast cadence
 
 import { fileURLToPath } from 'url';
 import { dirname, join, extname } from 'path';
@@ -64,7 +61,7 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-// ── GAME CONSTANTS ─────────────────────────────────────────────────────────────
+// ── GAME CONSTANTS — must mirror client exactly ────────────────────────────────
 const WORLD_W        = 3200;
 const FLOOR_Y        = 460;
 const MOVE_SPEED     = 5.5;
@@ -75,7 +72,8 @@ const ATTACK_CD      = 480;
 const PARRY_DUR      = 650;
 const PARRY_CD       = 800;
 const ATTACK_GROW_MS = 350;
-const TICK_MS        = 1000 / 60;   // ~16.67ms
+const TICK_MS        = 1000 / 60;   // ~16.67ms physics
+const BROADCAST_EVERY = 3;          // send state every N ticks = 20Hz
 const ROUND_DELAY    = 2800;
 const MAX_ROUNDS     = 5;
 const MAJORITY       = 3;
@@ -101,21 +99,15 @@ class SPlayer {
     this.sprinting = false;
     this.score = 0; this.anim = 'idle';
     this.lastSeq = 0;
-
-    // ── Input queue — the core of the fix ──────────────────────────────────────
-    // Continuous state (held keys): always latest value
-    this._heldInput = blank();
-    // Rising-edge queue: attack/jump/parry edges pushed here, drained each tick
-    // This means even if two network packets arrive in one 16ms window, neither
-    // attack nor jump is dropped.
-    this._edgeQueue = [];
+    // Held input state (continuous keys)
+    this._held = blank();
+    // Rising-edge queue for one-shot actions
+    this._edges = [];
   }
 
-  // Network layer calls this on every received input packet
   queueInput(input) {
-    const prev = this._heldInput;
-    // Update held state
-    this._heldInput = {
+    const prev = this._held;
+    this._held = {
       left:   !!input.left,
       right:  !!input.right,
       jump:   !!input.jump,
@@ -124,30 +116,27 @@ class SPlayer {
       parry:  !!input.parry,
       sprint: !!input.sprint,
     };
-    // Push rising edges to queue (de-duped: don't push if already queued)
-    if (input.attack && !prev.attack && !this._edgeQueue.includes('attack')) this._edgeQueue.push('attack');
-    if (input.jump   && !prev.jump   && !this._edgeQueue.includes('jump'))   this._edgeQueue.push('jump');
-    if (input.parry  && !prev.parry  && !this._edgeQueue.includes('parry'))  this._edgeQueue.push('parry');
+    if (input.attack && !prev.attack && !this._edges.includes('attack')) this._edges.push('attack');
+    if (input.jump   && !prev.jump   && !this._edges.includes('jump'))   this._edges.push('jump');
+    if (input.parry  && !prev.parry  && !this._edges.includes('parry'))  this._edges.push('parry');
     if (input.seq != null) this.lastSeq = input.seq;
   }
 
-  // Called once per tick — returns the input to use this tick, drains edge queue
   consumeInput() {
-    const inp = { ...this._heldInput };
-    if (this._edgeQueue.includes('attack')) { inp.attack = true; }
-    if (this._edgeQueue.includes('jump'))   { inp.jump   = true; }
-    if (this._edgeQueue.includes('parry'))  { inp.parry  = true; }
-    this._edgeQueue = [];
+    const inp = { ...this._held };
+    if (this._edges.includes('attack')) inp.attack = true;
+    if (this._edges.includes('jump'))   inp.jump   = true;
+    if (this._edges.includes('parry'))  inp.parry  = true;
+    this._edges = [];
     return inp;
   }
 
   swordTip() {
-    const dir      = this.facingRight ? 1 : -1;
-    const hb       = HB[this.char];
-    const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
-    const reach    = SWORD_REACH[this.char] * growFrac;
+    const dir  = this.facingRight ? 1 : -1;
+    const hb   = HB[this.char];
+    const grow = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
     return {
-      x: this.x + dir * (hb.hw + reach),
+      x: this.x + dir * (hb.hw + SWORD_REACH[this.char] * grow),
       y: this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0),
     };
   }
@@ -253,7 +242,7 @@ class Room {
     this.state = 'waiting'; this.round = 1;
     this.cdVal = 3; this.cdMs = 0; this.roundMs = 0; this.hitDone = false;
     this._interval = null; this._running = false;
-    this._lastTick = 0; this._acc = 0;
+    this._lastTick = 0; this._acc = 0; this._tickCount = 0;
   }
 
   addClient(ws, pid) {
@@ -270,25 +259,23 @@ class Room {
     this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
     this._broadcast({ type: 'start', round: this.round });
     this._running = true;
-    this._lastTick = Date.now();
-    this._acc = 0;
-    // Clean fixed-interval tick — runs at ~60Hz, no CPU spin
+    this._lastTick = Date.now(); this._acc = 0; this._tickCount = 0;
     this._interval = setInterval(() => this._loop(), Math.floor(TICK_MS));
   }
 
   _loop() {
     if (!this._running) return;
     const now = Date.now();
-    const elapsed = Math.min(now - this._lastTick, TICK_MS * 5); // clamp spike
+    const elapsed = Math.min(now - this._lastTick, TICK_MS * 4);
     this._lastTick = now;
     this._acc += elapsed;
     let steps = 0;
-    while (this._acc >= TICK_MS && steps < 5) {
+    while (this._acc >= TICK_MS && steps < 4) {
       this._tick(TICK_MS);
       this._acc -= TICK_MS;
       steps++;
     }
-    if (this._acc > TICK_MS * 2) this._acc = 0; // reset if badly behind
+    if (this._acc > TICK_MS * 2) this._acc = 0;
   }
 
   _respawn() {
@@ -306,6 +293,7 @@ class Room {
 
   _tick(dt) {
     if (!this._running) return;
+    this._tickCount++;
 
     if (this.state === 'countdown') {
       this.cdMs += dt;
@@ -313,9 +301,9 @@ class Room {
         this.cdMs -= 1000; this.cdVal--;
         if (this.cdVal <= 0) { this.state = 'playing'; this.hitDone = false; this.cdVal = 0; }
       }
-      // Drain queues but don't apply during countdown
       if (this.p1) { this.p1.consumeInput(); this.p1.update(dt, blank()); }
       if (this.p2) { this.p2.consumeInput(); this.p2.update(dt, blank()); }
+
     } else if (this.state === 'playing') {
       const i1 = this.p1 ? this.p1.consumeInput() : blank();
       const i2 = this.p2 ? this.p2.consumeInput() : blank();
@@ -324,21 +312,32 @@ class Room {
       if (!this.hitDone) {
         const r12 = this._checkHit(this.p1, this.p2);
         const r21 = this._checkHit(this.p2, this.p1);
-        if      (r12 === 'parried') this._broadcast({ type: 'parried', by: 2 });
-        else if (r12)               this._resolveKill(this.p1, this.p2);
-        else if (r21 === 'parried') this._broadcast({ type: 'parried', by: 1 });
-        else if (r21)               this._resolveKill(this.p2, this.p1);
+        if (r12 === 'parried') {
+          // Send parry immediately — don't wait for broadcast cadence
+          this._broadcast({ type: 'parried', by: 2 });
+        } else if (r12) {
+          this._resolveKill(this.p1, this.p2);
+          return; // state changed, skip normal broadcast this tick
+        } else if (r21 === 'parried') {
+          this._broadcast({ type: 'parried', by: 1 });
+        } else if (r21) {
+          this._resolveKill(this.p2, this.p1);
+          return;
+        }
       }
+
     } else if (this.state === 'round_end') {
       if (this.p1) { this.p1.consumeInput(); this.p1.update(dt, blank()); }
       if (this.p2) { this.p2.consumeInput(); this.p2.update(dt, blank()); }
       this.roundMs += dt;
-      if (this.roundMs >= ROUND_DELAY) this._nextRound();
+      if (this.roundMs >= ROUND_DELAY) { this._nextRound(); return; }
     }
 
-    // Broadcast state every single tick (60Hz) — no separate broadcast timer
-    // Host sees himself with zero extra delay; remote sees at 60Hz too
-    if (this.state !== 'game_over') this._sendState();
+    // Throttled state broadcast: every BROADCAST_EVERY ticks (~20Hz)
+    // This is the key fix for host lag — 20Hz × 2 msgs vs 60Hz × 2 msgs
+    if (this._tickCount % BROADCAST_EVERY === 0 && this.state !== 'game_over') {
+      this._sendState();
+    }
   }
 
   _checkHit(atk, def) {
@@ -349,14 +348,21 @@ class Room {
       if (tip.x >= pb.left && tip.x <= pb.right && tip.y >= pb.top && tip.y <= pb.bottom) return 'parried';
     }
     const box = def.bodyBox();
-    return (tip.x >= box.left && tip.x <= box.right && tip.y >= box.top && tip.y <= box.bottom) ? true : false;
+    return tip.x >= box.left && tip.x <= box.right && tip.y >= box.top && tip.y <= box.bottom;
   }
 
   _resolveKill(atk, def) {
     const dir = atk.facingRight ? 1 : -1;
     def.kill(dir); atk.score++;
     this.hitDone = true; this.state = 'round_end'; this.roundMs = 0;
-    this._broadcast({ type: 'kill', atk: atk.id, def: def.id, scores: { 1: this.p1.score, 2: this.p2.score } });
+    // Send kill immediately — critical event, not throttled
+    this._broadcast({ type: 'kill', atk: atk.id, def: def.id,
+      scores: { 1: this.p1.score, 2: this.p2.score },
+      // Include positions so client can place effects accurately
+      defX: def.deadX, defY: def.deadY,
+    });
+    // Also send a state update immediately after kill so clients sync fast
+    this._sendState();
   }
 
   _nextRound() {
@@ -387,7 +393,6 @@ class Room {
     for (const { ws } of this.clients) if (ws.readyState === 1) ws.send(s);
   }
 
-  // Ping a specific client to measure RTT
   sendPing(pid) {
     const c = this.clients.find(x => x.pid === pid);
     if (!c || c.ws.readyState !== 1) return;
@@ -429,14 +434,12 @@ function genCode() {
 const wss   = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 const rooms = new Map();
 
-// Ping all players every 2s for latency display
 setInterval(() => {
   for (const room of rooms.values())
     for (const { pid } of room.clients)
       room.sendPing(pid);
 }, 2000);
 
-// Clean up dead rooms every 5 minutes
 setInterval(() => {
   for (const [code, room] of rooms)
     if (room.clients.length === 0) { room.stop(); rooms.delete(code); }
@@ -464,17 +467,8 @@ wss.on('connection', (ws) => {
       }
 
       if (!room) return;
-
-      if (msg.type === 'input') {
-        // Zero-overhead: queue the input immediately, server tick will consume it
-        room.receiveInput(pid, msg.input);
-        return;
-      }
-
-      if (msg.type === 'pong') {
-        room.receivePong(pid);
-        return;
-      }
+      if (msg.type === 'input')  { room.receiveInput(pid, msg.input); return; }
+      if (msg.type === 'pong')   { room.receivePong(pid); return; }
 
     } catch (_) {}
   });
