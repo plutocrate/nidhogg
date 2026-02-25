@@ -70,8 +70,8 @@
     }
   </style>
 
-  <!-- Tone.js — loaded eagerly so it's parsed before any audio call -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+  <!-- Tone.js — defer so it never blocks DOM parsing or DOMContentLoaded -->
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 </head>
 <body>
   <div id="loading">

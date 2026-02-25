@@ -535,7 +535,9 @@ function startLocal(mode){
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
+// ES modules are deferred by default — DOM is already ready when this runs.
+// Don't wait for DOMContentLoaded; just boot immediately.
+(function boot() {
   const bar = document.getElementById('load-bar');
   const scr = document.getElementById('loading');
 
@@ -543,13 +545,11 @@ window.addEventListener('DOMContentLoaded', () => {
     if (scr) {
       scr.style.opacity = '0';
       scr.style.pointerEvents = 'none';
-      // Remove from DOM after fade so it can never block input
       setTimeout(() => { if (scr.parentNode) scr.parentNode.removeChild(scr); }, 600);
     }
     new Menu();
   }
 
-  // Fill bar quickly then launch — guaranteed to complete
   let p = 0;
   const iv = setInterval(() => {
     p += 18 + Math.random() * 22;
@@ -561,6 +561,6 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }, 60);
 
-  // Hard failsafe: if something goes wrong, show menu after 2s regardless
+  // Hard failsafe: show menu after 2s regardless
   setTimeout(() => { if (p < 100) { p = 100; clearInterval(iv); showMenu(); } }, 2000);
-});
+})();
