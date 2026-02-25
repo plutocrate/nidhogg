@@ -26,15 +26,16 @@ const PARRY_HB = { heavy: { fw: 85, fh: 63  }, light: { fw: 78, fh: 60  } };
 const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 900, light: 750 };
 
-const CAM_LERP     = 0.085;
+const CAM_LERP     = 0.12;
 const CAM_ZOOM_MAX = 1.0;
 const CAM_ZOOM_MIN = 0.38;
 const CAM_DIST_MIN = 250;
 const CAM_DIST_MAX = 1600;
 
-// Opponent interpolation: render remote player this many ms behind
-// to always have 2 snapshots to lerp between at 20Hz server broadcast
-const INTERP_DELAY = 80;
+// Opponent interpolation: render remote player this many ms behind.
+// At 30Hz broadcast (33ms interval), 40ms gives a safe 7ms buffer
+// while halving the previous 80ms visual lag.
+const INTERP_DELAY = 40;
 
 // For my own player (host side): do NOT interpolate — apply server corrections
 // directly without the snap buffer delay. This is what makes host feel snappy.
@@ -459,8 +460,12 @@ class SnapBuffer {
     if (this.buf.length === 0) return null;
     const targetT = performance.now() - INTERP_DELAY;
 
-    // Not enough history yet — use oldest
-    if (this.buf[0].t >= targetT) return this.buf[0].snap;
+    // Buffer not full yet — extrapolate backward from oldest snap using velocity
+    if (this.buf[0].t >= targetT) {
+      const s = this.buf[0].snap;
+      const dtSec = Math.max(-0.08, (targetT - this.buf[0].t) / 1000);
+      return { ...s, x: s.x + (s.vx || 0) * dtSec * 60, y: s.y + (s.vy || 0) * dtSec * 60 };
+    }
 
     // Find bracket
     let a = this.buf[0], b = this.buf[0];
@@ -468,7 +473,13 @@ class SnapBuffer {
       if (this.buf[i].t <= targetT) a = this.buf[i];
       else { b = this.buf[i]; break; }
     }
-    if (a === b) return a.snap; // past end of buffer
+
+    // Past end of buffer — extrapolate forward from newest snap using velocity
+    if (a === b) {
+      const s = a.snap;
+      const dtSec = Math.min(0.08, (targetT - a.t) / 1000);
+      return { ...s, x: s.x + (s.vx || 0) * dtSec * 60, y: s.y + (s.vy || 0) * dtSec * 60 };
+    }
 
     const span = b.t - a.t;
     const frac = span > 0 ? Math.min(1, (targetT - a.t) / span) : 0;
@@ -476,9 +487,9 @@ class SnapBuffer {
     return {
       x:           s.x + (e.x - s.x) * frac,
       y:           s.y + (e.y - s.y) * frac,
-      deadX:       s.deadX + (e.deadX - s.deadX) * frac,
-      deadY:       s.deadY + (e.deadY - s.deadY) * frac,
-      deadAngle:   s.deadAngle + (e.deadAngle - s.deadAngle) * frac,
+      deadX:       (s.deadX||0) + ((e.deadX||0) - (s.deadX||0)) * frac,
+      deadY:       (s.deadY||0) + ((e.deadY||0) - (s.deadY||0)) * frac,
+      deadAngle:   (s.deadAngle||0) + ((e.deadAngle||0) - (s.deadAngle||0)) * frac,
       deadTimer:   e.deadTimer,
       facingRight: frac < 0.5 ? s.facingRight : e.facingRight,
       alive: e.alive, dead: e.dead,
@@ -673,7 +684,10 @@ export class Game {
       }
 
       case 'parried':
-        this.audio.playParry();
+        // Only play if we didn't already predict it locally (avoid double-sound from CSP)
+        if (!(this.myPid === 2 ? this.p1 : this.p2).parrying) {
+          this.audio.playParry();
+        }
         break;
 
       case 'new_round': {
@@ -705,12 +719,9 @@ export class Game {
 
   _sendInput(inp, seq) {
     if (!this.ws || this.ws.readyState !== 1) return;
-    // ALWAYS send when an action key is pressed — never suppress attack/jump/parry
-    // For held movement, send on change OR every 4 frames to keep seq ticking
-    const hasAction = inp.attack || inp.jump || inp.parry;
-    const moveKey = `${+inp.left}${+inp.right}${+inp.crouch}${+inp.sprint}`;
-    if (!hasAction && moveKey === this._lastMoveKey && seq % 4 !== 0) return;
-    this._lastMoveKey = moveKey;
+    // Send every frame — suppressing movement inputs causes seq to skip,
+    // which makes reconciliation replay 4–16 stale inputs instead of 1–2.
+    // JSON payload is ~80 bytes; at 60Hz this is ~4.8KB/s upstream — negligible.
     this.ws.send(JSON.stringify({ type: 'input', input: { ...inp, seq } }));
   }
 

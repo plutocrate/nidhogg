@@ -73,7 +73,7 @@ const PARRY_DUR      = 650;
 const PARRY_CD       = 800;
 const ATTACK_GROW_MS = 350;
 const TICK_MS        = 1000 / 60;   // ~16.67ms physics
-const BROADCAST_EVERY = 3;          // send state every N ticks = 20Hz
+const BROADCAST_EVERY = 2;          // send state every N ticks = 30Hz
 const ROUND_DELAY    = 2800;
 const MAX_ROUNDS     = 5;
 const MAJORITY       = 3;
@@ -241,7 +241,7 @@ class Room {
     this.p1 = null; this.p2 = null;
     this.state = 'waiting'; this.round = 1;
     this.cdVal = 3; this.cdMs = 0; this.roundMs = 0; this.hitDone = false;
-    this._interval = null; this._running = false;
+    this._interval = null; this._timeout = null; this._running = false;
     this._lastTick = 0; this._acc = 0; this._tickCount = 0;
   }
 
@@ -260,7 +260,17 @@ class Room {
     this._broadcast({ type: 'start', round: this.round });
     this._running = true;
     this._lastTick = Date.now(); this._acc = 0; this._tickCount = 0;
-    this._interval = setInterval(() => this._loop(), Math.floor(TICK_MS));
+    // Use self-scheduling setTimeout instead of setInterval to prevent
+    // the 40ms/sec drift caused by Math.floor(16.67) = 16ms interval
+    this._scheduleNext();
+  }
+
+  _scheduleNext() {
+    if (!this._running) return;
+    const now = Date.now();
+    const elapsed = now - this._lastTick;
+    const delay = Math.max(0, TICK_MS - (elapsed % TICK_MS));
+    this._timeout = setTimeout(() => this._loop(), delay);
   }
 
   _loop() {
@@ -275,7 +285,9 @@ class Room {
       this._acc -= TICK_MS;
       steps++;
     }
-    if (this._acc > TICK_MS * 2) this._acc = 0;
+    // Prevent accumulator runaway — if more than 1 tick behind, reset
+    if (this._acc > TICK_MS) this._acc = 0;
+    this._scheduleNext();
   }
 
   _respawn() {
@@ -410,6 +422,7 @@ class Room {
 
   stop() {
     this._running = false;
+    if (this._timeout)  { clearTimeout(this._timeout);   this._timeout  = null; }
     if (this._interval) { clearInterval(this._interval); this._interval = null; }
   }
 
