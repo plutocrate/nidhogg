@@ -189,8 +189,9 @@ class SPlayer {
       grounded: this.grounded, facingRight: this.facingRight,
       alive: this.alive, dead: this.dead,
       deadX: this.deadX, deadY: this.deadY, deadAngle: this.deadAngle, deadTimer: this.deadTimer,
-      attacking: this.attacking, attackTimer: this.attackTimer,
-      crouching: this.crouching, parrying: this.parrying, parryTimer: this.parryTimer,
+      attacking: this.attacking, attackTimer: this.attackTimer, attackCd: this.attackCd,
+      crouching: this.crouching,
+      parrying: this.parrying, parryTimer: this.parryTimer, parryCd: this.parryCd,
       sprinting: this.sprinting, anim: this.anim, score: this.score,
       seq: this.lastSeq,  // ← reconciliation anchor for client-side prediction
     };
@@ -222,8 +223,26 @@ class Room {
     this.p2.facingRight = false;
     this.state = 'countdown'; this.cdVal = 3; this.cdMs = 0;
     this._broadcast({ type: 'start', round: this.round });
-    this._running = true; this._lastTick = Date.now();
-    this._timer = setInterval(() => this._tick(), TICK_MS);
+    this._running = true;
+    this._lastHr = process.hrtime.bigint();
+    this._lastBroadcast = Date.now();
+    this._scheduleNext();
+  }
+
+  _scheduleNext() {
+    if (!this._running) return;
+    // setImmediate gives tighter timing than setInterval on cloud VMs.
+    // We check elapsed time ourselves using hrtime (nanosecond precision).
+    this._timer = setImmediate(() => {
+      if (!this._running) return;
+      const now = process.hrtime.bigint();
+      const elapsedMs = Number(now - this._lastHr) / 1e6;
+      if (elapsedMs >= TICK_MS) {
+        this._lastHr = now;
+        this._tick(Math.min(elapsedMs, TICK_MS * 3));
+      }
+      this._scheduleNext();
+    });
   }
 
   _respawn() {
@@ -243,11 +262,8 @@ class Room {
     if (p && input.seq != null) p.lastSeq = input.seq;
   }
 
-  _tick() {
+  _tick(dt) {
     if (!this._running) return;
-    const now = Date.now();
-    const dt  = Math.min(now - this._lastTick, TICK_MS * 3);
-    this._lastTick = now;
 
     if (this.state === 'countdown') {
       this.cdMs += dt;
@@ -273,6 +289,7 @@ class Room {
       if (this.roundMs >= ROUND_DELAY) this._nextRound();
     }
 
+    const now = Date.now();
     if (now - this._lastBroadcast >= BROADCAST_MS && this.state !== 'game_over') {
       this._lastBroadcast = now;
       this._sendState();
@@ -329,7 +346,7 @@ class Room {
 
   stop() {
     this._running = false;
-    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    if (this._timer) { clearImmediate(this._timer); this._timer = null; }
   }
 
   removeClient(ws) {
