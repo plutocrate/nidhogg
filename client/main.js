@@ -3,32 +3,19 @@ import { AudioManager } from './audio.js';
 
 // ─── SHARED AUDIO SINGLETON ───────────────────────────────────────────────────
 // One AudioManager for the entire page lifetime.
-// AudioContext is created immediately in constructor() (suspended — allowed).
-// preloadAll() is called on first user gesture: it resume()s the context AND
-// fetches+decodes all WAV files (served from Cache API on repeat visits).
-// Game launch is BLOCKED until preloadAll() resolves — zero missing SFX.
+// initAudio() is triggered on the very first user gesture (key or click),
+// unlocking the AudioContext and immediately starting BGM + background SFX decode.
+// The Game receives this same instance so it never re-initialises the context.
 const sharedAudio = new AudioManager();
+let _audioUnlocked = false;
 
-// Single Promise for audio readiness — set on first gesture, reused thereafter.
-let _audioPromise = null;
-
-// Called on every user interaction. Returns a Promise<void> that resolves when
-// all audio buffers are decoded and ready. Safe to await multiple times.
-function ensureAudio() {
-  if (!_audioPromise) {
-    _audioPromise = sharedAudio.preloadAll().catch(err => {
-      console.error('[main] audio preload error:', err);
-    });
-  }
-  return _audioPromise;
+function unlockAudio() {
+  if (_audioUnlocked) return;
+  _audioUnlocked = true;
+  sharedAudio.preloadAll().catch(() => {});
 }
-
-// Begin preloading on very first interaction (covers keyboard and mouse users)
-window.addEventListener('keydown', ensureAudio, { once: true });
-window.addEventListener('click',   ensureAudio, { once: true });
-
-// Legacy alias — still called from menu handlers; now triggers ensureAudio
-function unlockAudio() { ensureAudio(); }
+window.addEventListener('keydown', unlockAudio, { once: true });
+window.addEventListener('click',   unlockAudio, { once: true });
 
 const canvas = document.getElementById('game-canvas');
 const W = 960, H = 540;
@@ -508,12 +495,13 @@ function startGame(socket, pid, roomCode, myPid){
   function onExit(){ finish(); }
   window.addEventListener('game:exit', onExit);
 
-  // CRITICAL: await audio before starting — guarantees all SFX buffers decoded
-  ensureAudio().then(() => {
-    if (done) return; // user navigated away during audio load
+  const _startGame = () => {
+    if (done) return;
     game = new Game(canvas, { mode:'online', myPid: pid, roomCode, socket, audio: sharedAudio });
     game.start();
-  });
+  };
+  const _timeout = setTimeout(_startGame, 3000);
+  sharedAudio.preloadAll().then(() => { clearTimeout(_timeout); _startGame(); }).catch(_startGame);
 }
 
 // ─── LOCAL / TUTORIAL START ───────────────────────────────────────────────────
@@ -536,12 +524,14 @@ function startLocal(mode){
   window.addEventListener('game:exit', onExit);
   window.addEventListener('keydown',   onKey);
 
-  // CRITICAL: await audio before starting — guarantees all SFX buffers decoded
-  ensureAudio().then(() => {
-    if (done) return; // user ESC'd during audio load
+  // Wait for audio, but start game after 3s max regardless
+  const _startGame = () => {
+    if (done) return;
     game = new Game(canvas, { mode, audio: sharedAudio });
     game.start();
-  });
+  };
+  const _timeout = setTimeout(_startGame, 3000);
+  sharedAudio.preloadAll().then(() => { clearTimeout(_timeout); _startGame(); }).catch(_startGame);
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────────
