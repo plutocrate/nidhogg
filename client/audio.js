@@ -87,10 +87,10 @@ export class AudioManager {
       await this._T.start();                    // unlock AudioContext on gesture
       this._ctx = this._T.context.rawContext;   // share one context everywhere
 
-      this._buildBGMChain();
+      // BGM disabled — SFX only
       this._buildSynths();
       this._loadSFX();    // non-blocking — files load in background
-      this._startBGM();   // non-blocking — streams BGM
+      // this._startBGM(); // BGM intentionally disabled
     } catch (e) {
       console.warn('[audio] init error:', e);
       this.initialized = false;

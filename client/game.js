@@ -257,6 +257,19 @@ class Player {
     ctx.lineTo(tipX, tipY);
     ctx.stroke();
 
+    // Attack box (orange) — sword sweep zone, visible while attacking
+    if (this.attacking) {
+      const atkW = sr;
+      const atkH = hb.hh * 0.55;
+      const atkX = this.facingRight ? this.x + hb.hw : this.x - hb.hw - atkW;
+      const atkY = this.y - hb.hh * 0.6 - atkH * 0.5 + (this.crouching ? hb.hh * 0.35 : 0);
+      ctx.strokeStyle = 'rgba(255,160,0,0.90)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(atkX, atkY, atkW, atkH);
+      ctx.fillStyle = 'rgba(255,160,0,0.10)';
+      ctx.fillRect(atkX, atkY, atkW, atkH);
+    }
+
     // Parry box (cyan) — only visible while parrying
     if (this.parrying) {
       ctx.strokeStyle = 'rgba(0,220,255,0.90)';
@@ -903,7 +916,7 @@ export class Game {
       ctx.save(); ctx.shadowBlur = 0;
       ctx.font = '11px "Courier New"'; ctx.textAlign = 'right';
       ctx.fillStyle = 'rgba(0,255,80,0.6)';
-      ctx.fillText('HITBOXES ON  [\\] to hide', vw - 12, vh - 10);
+      ctx.fillText('HITBOXES  [\\] toggle  |  green=body  orange=attack  cyan=parry', vw - 12, vh - 10);
       ctx.restore();
     }
   }

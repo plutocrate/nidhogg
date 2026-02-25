@@ -118,84 +118,258 @@ class Menu {
 
   _draw(){
     const ctx=this.ctx;
-    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+    // rich dark background
+    ctx.fillStyle='#080b0a'; ctx.fillRect(0,0,W,H);
     if(this.state==='main') this._drawMain();
     else                    this._drawControls();
   }
 
   _drawMain(){
     const ctx=this.ctx;
-    ctx.save(); ctx.textAlign='center';
-    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=20+this.glow*32;
-    ctx.font='bold 84px "Courier New"';
-    ctx.fillStyle=`rgba(78,205,196,${.3+this.glow*.7})`; ctx.fillText('NIDHOGG',W/2,126);
-    ctx.shadowBlur=0; ctx.fillStyle='#fff'; ctx.fillText('NIDHOGG',W/2,126);
-    ctx.font='14px "Courier New"'; ctx.fillStyle='#4ecdc4'; ctx.fillText('— GROTTO DUEL —',W/2,160);
+    const cx=W/2, t=this.t;
+
+    // — scanline / noise background —
+    ctx.fillStyle='#080b0a'; ctx.fillRect(0,0,W,H);
+    // subtle diagonal grid
+    ctx.save();
+    ctx.strokeStyle='rgba(78,205,196,0.03)'; ctx.lineWidth=1;
+    for(let x=-H;x<W+H;x+=38){
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x+H,H); ctx.stroke();
+    }
     ctx.restore();
-    ctx.save(); ctx.strokeStyle='rgba(78,205,196,0.25)'; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(W/2-200,175); ctx.lineTo(W/2+200,175); ctx.stroke(); ctx.restore();
-    const startY=220, gap=58, bw=300, bh=44;
+    // horizontal scan band
+    const scanY=(t*0.04)%H;
+    const grad=ctx.createLinearGradient(0,scanY-18,0,scanY+18);
+    grad.addColorStop(0,'rgba(78,205,196,0)');
+    grad.addColorStop(0.5,'rgba(78,205,196,0.04)');
+    grad.addColorStop(1,'rgba(78,205,196,0)');
+    ctx.fillStyle=grad; ctx.fillRect(0,scanY-18,W,36);
+
+    // — corner ornaments —
+    ctx.save(); ctx.strokeStyle='rgba(78,205,196,0.3)'; ctx.lineWidth=1.5;
+    const co=22, cl=40;
+    [[co,co],[W-co,co],[co,H-co],[W-co,H-co]].forEach(([ox,oy])=>{
+      const sx=ox===co?1:-1, sy=oy===co?1:-1;
+      ctx.beginPath(); ctx.moveTo(ox,oy+sy*cl); ctx.lineTo(ox,oy); ctx.lineTo(ox+sx*cl,oy); ctx.stroke();
+    });
+    ctx.restore();
+
+    // — NIDHOGG title —
+    ctx.save(); ctx.textAlign='center';
+    // shadow glow layers
+    for(let g=3;g>=0;g--){
+      ctx.font='bold 96px "Courier New"';
+      ctx.fillStyle=`rgba(78,205,196,${(0.06+this.glow*0.08)/(g+1)})`;
+      ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=60-g*12;
+      ctx.fillText('NIDHOGG',cx+g*0.5,118+g*0.5);
+    }
+    // crisp white top
+    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=18+this.glow*22;
+    ctx.font='bold 96px "Courier New"';
+    ctx.fillStyle='#ffffff'; ctx.fillText('NIDHOGG',cx,118);
+    ctx.restore();
+
+    // subtitle with decorative dashes
+    ctx.save(); ctx.textAlign='center';
+    ctx.font='13px "Courier New"';
+    ctx.letterSpacing='6px';
+    ctx.fillStyle=`rgba(78,205,196,${0.55+this.glow*0.3})`;
+    ctx.fillText('◈  GROTTO DUEL  ◈',cx,150);
+    ctx.restore();
+
+    // divider line with glow
+    ctx.save();
+    const lg=ctx.createLinearGradient(cx-260,0,cx+260,0);
+    lg.addColorStop(0,'rgba(78,205,196,0)');
+    lg.addColorStop(0.5,`rgba(78,205,196,${0.35+this.glow*0.25})`);
+    lg.addColorStop(1,'rgba(78,205,196,0)');
+    ctx.strokeStyle=lg; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(cx-260,168); ctx.lineTo(cx+260,168); ctx.stroke();
+    ctx.restore();
+
+    // — Menu items —
+    const startY=212, gap=66, bw=340, bh=50;
     this.rects=[];
     this.items.forEach((item,i)=>{
-      const cy=startY+i*gap, bx=W/2-bw/2, by=cy-30;
+      const cy=startY+i*gap, bx=cx-bw/2, by=cy-32;
       this.rects.push({x:bx,y:by,w:bw,h:bh});
       const hot=i===this.sel||i===this.hover;
       ctx.save(); ctx.textAlign='center';
+
       if(hot){
-        ctx.fillStyle='rgba(78,205,196,0.12)'; ctx.fillRect(bx,by,bw,bh);
-        ctx.strokeStyle=i===this.hover?'rgba(78,205,196,0.65)':'#4ecdc4';
-        ctx.lineWidth=1; ctx.strokeRect(bx,by,bw,bh);
-        const pulse=Math.sin(this.t*.006)*4;
-        ctx.fillStyle='#4ecdc4'; ctx.font='bold 17px "Courier New"';
-        ctx.fillText('▶',W/2-130+pulse,cy+2); ctx.fillText('◀',W/2+130-pulse,cy+2);
-        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=8; ctx.fillStyle='#fff';
+        // glowing selected state
+        const pulse=0.7+Math.sin(t*0.007)*0.3;
+        // bg fill with gradient
+        const bg=ctx.createLinearGradient(bx,by,bx+bw,by);
+        bg.addColorStop(0,'rgba(78,205,196,0.00)');
+        bg.addColorStop(0.5,`rgba(78,205,196,${0.14*pulse})`);
+        bg.addColorStop(1,'rgba(78,205,196,0.00)');
+        ctx.fillStyle=bg; ctx.fillRect(bx,by,bw,bh);
+        // left/right accent bars
+        ctx.fillStyle=`rgba(78,205,196,${0.8*pulse})`;
+        ctx.fillRect(bx,by,3,bh);
+        ctx.fillRect(bx+bw-3,by,3,bh);
+        // top/bottom hairlines
+        ctx.strokeStyle=`rgba(78,205,196,${0.4*pulse})`; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(bx+3,by); ctx.lineTo(bx+bw-3,by); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(bx+3,by+bh); ctx.lineTo(bx+bw-3,by+bh); ctx.stroke();
+        // animated arrow indicators
+        const arrowPulse=Math.sin(t*0.009)*6;
+        ctx.font='bold 14px "Courier New"';
+        ctx.fillStyle=`rgba(78,205,196,${0.85*pulse})`;
+        ctx.fillText('▶',bx+18+arrowPulse,cy+2);
+        ctx.fillText('◀',bx+bw-18-arrowPulse,cy+2);
+        // label
+        ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=14*pulse;
+        ctx.font='bold 20px "Courier New"'; ctx.fillStyle='#ffffff';
+        ctx.fillText(item.label,cx,cy+1);
+        ctx.shadowBlur=0;
+        if(item.sub){
+          ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.75)';
+          ctx.fillText(item.sub,cx,cy+19);
+        }
       } else {
-        ctx.fillStyle='rgba(190,210,208,0.45)';
-      }
-      ctx.font='bold 22px "Courier New"'; ctx.fillText(item.label,W/2,cy+2);
-      if(item.sub){
-        ctx.shadowBlur=0; ctx.font='11px "Courier New"';
-        ctx.fillStyle=hot?'rgba(78,205,196,0.7)':'rgba(140,170,160,0.5)';
-        ctx.fillText(item.sub,W/2,cy+18);
+        // dim unselected — slight indent feel
+        ctx.font='bold 20px "Courier New"';
+        ctx.fillStyle=`rgba(160,195,188,${0.28+Math.sin(t*0.003+i)*0.04})`;
+        ctx.fillText(item.label,cx,cy+1);
+        if(item.sub){
+          ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(120,160,150,0.32)';
+          ctx.fillText(item.sub,cx,cy+19);
+        }
       }
       ctx.restore();
     });
-    ctx.save(); ctx.textAlign='center'; ctx.fillStyle='rgba(100,140,130,0.5)';
-    ctx.font='11px "Courier New"';
-    ctx.fillText('↑↓ or MOUSE to select   ·   ENTER / CLICK to confirm',W/2,H-18);
+
+    // footer hint
+    ctx.save(); ctx.textAlign='center';
+    ctx.font='10px "Courier New"';
+    ctx.fillStyle=`rgba(78,205,196,${0.25+this.glow*0.1})`;
+    ctx.fillText('↑ ↓  or  MOUSE  to navigate    ·    ENTER  or  CLICK  to select',cx,H-16);
     ctx.restore();
   }
 
   _drawControls(){
-    const ctx=this.ctx;
-    const bx=W/2-330,by=H/2-210,bw=660,bh=420;
-    ctx.save();
-    ctx.fillStyle='rgba(0,0,0,0.95)'; ctx.fillRect(bx,by,bw,bh);
-    ctx.strokeStyle='#4ecdc4'; ctx.lineWidth=1; ctx.strokeRect(bx,by,bw,bh);
-    ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
-    ctx.font='bold 24px "Courier New"'; ctx.fillText('CONTROLS',W/2,by+44);
-    ctx.strokeStyle='rgba(78,205,196,0.25)'; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(bx+40,by+58); ctx.lineTo(bx+bw-40,by+58); ctx.stroke();
-    const c1=bx+55, c2=bx+340;
-    const rows =[['A/D','Move'],['W','Jump'],['S','Crouch'],['J','Attack']];
-    const rows2=[['← →','Move'],['↑','Jump'],['↓','Crouch'],['Num0','Attack']];
-    ctx.textAlign='left'; ctx.fillStyle='#e63946'; ctx.font='bold 15px "Courier New"';
-    ctx.fillText('P1 — KNIGHT  (WASD+J)',c1,by+82);
-    ctx.fillStyle='#4ecdc4'; ctx.fillText('P2 LOCAL  (Arrows+Num0)',c2,by+82);
-    rows.forEach(([k,d],i)=>{
-      ctx.fillStyle='#777'; ctx.font='13px "Courier New"'; ctx.fillText(`[ ${k} ]`,c1,by+108+i*28);
-      ctx.fillStyle='#ddd'; ctx.fillText(d,c1+90,by+108+i*28);
+    const ctx=this.ctx; const cx=W/2;
+    // dim bg
+    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+
+    // panel
+    const bx=cx-340,by=H/2-220,bw=680,bh=440;
+    // panel bg
+    const panelGrad=ctx.createLinearGradient(bx,by,bx,by+bh);
+    panelGrad.addColorStop(0,'rgba(8,18,15,0.98)');
+    panelGrad.addColorStop(1,'rgba(4,10,8,0.98)');
+    ctx.fillStyle=panelGrad; ctx.fillRect(bx,by,bw,bh);
+    // panel border
+    ctx.strokeStyle='rgba(78,205,196,0.55)'; ctx.lineWidth=1.5;
+    ctx.strokeRect(bx,by,bw,bh);
+    // inner highlight
+    ctx.strokeStyle='rgba(78,205,196,0.08)'; ctx.lineWidth=1;
+    ctx.strokeRect(bx+4,by+4,bw-8,bh-8);
+    // corner ticks
+    ctx.strokeStyle='rgba(78,205,196,0.5)'; ctx.lineWidth=2;
+    const ctl=14;
+    [[bx,by],[bx+bw,by],[bx,by+bh],[bx+bw,by+bh]].forEach(([ox,oy])=>{
+      const sx=ox===bx?1:-1, sy=oy===by?1:-1;
+      ctx.beginPath(); ctx.moveTo(ox+sx*ctl,oy); ctx.lineTo(ox,oy); ctx.lineTo(ox,oy+sy*ctl); ctx.stroke();
     });
-    rows2.forEach(([k,d],i)=>{
-      ctx.fillStyle='#777'; ctx.font='13px "Courier New"'; ctx.fillText(`[ ${k} ]`,c2,by+108+i*28);
-      ctx.fillStyle='#ddd'; ctx.fillText(d,c2+90,by+108+i*28);
-    });
-    ctx.textAlign='center'; ctx.fillStyle='rgba(78,205,196,0.7)';
+
+    // title
+    ctx.save(); ctx.textAlign='center';
+    ctx.font='bold 22px "Courier New"';
+    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=14;
+    ctx.fillStyle='#4ecdc4'; ctx.fillText('CONTROLS',cx,by+46);
+    ctx.shadowBlur=0;
+    // divider
+    ctx.strokeStyle='rgba(78,205,196,0.3)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(bx+50,by+60); ctx.lineTo(bx+bw-50,by+60); ctx.stroke();
+    ctx.restore();
+
+    // two columns
+    const c1=bx+60, c2=bx+370;
+    const rowH=30, rowStart=by+100;
+
+    // P1 header
+    ctx.save(); ctx.textAlign='left';
     ctx.font='bold 13px "Courier New"';
-    ctx.fillText('ONLINE: both players use WASD+J on their own machine',W/2,by+250);
-    ctx.fillText('ONE HIT KILLS — TIMING IS EVERYTHING',W/2,by+278);
-    ctx.fillStyle='rgba(100,140,130,0.5)'; ctx.font='11px "Courier New"';
-    ctx.fillText('CLICK or ENTER to return',W/2,by+318);
+    ctx.fillStyle='#e63946'; ctx.shadowColor='#e63946'; ctx.shadowBlur=8;
+    ctx.fillText('P1  KNIGHT',c1,by+86);
+    ctx.shadowBlur=0;
+    ctx.fillStyle='rgba(180,80,80,0.5)'; ctx.font='11px "Courier New"';
+    ctx.fillText('WASD + J / K / LShift',c1,by+86+14);
+    ctx.restore();
+
+    // P2 header
+    ctx.save(); ctx.textAlign='left';
+    ctx.font='bold 13px "Courier New"';
+    ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=8;
+    ctx.fillText('P2  THIEF',c2,by+86);
+    ctx.shadowBlur=0;
+    ctx.fillStyle='rgba(60,160,150,0.5)'; ctx.font='11px "Courier New"';
+    ctx.fillText('Arrows + L / ; / RShift',c2,by+86+14);
+    ctx.restore();
+
+    const rows=[
+      ['A / D','Move left / right'],
+      ['W','Jump'],
+      ['S','Crouch'],
+      ['J','Attack'],
+      ['K','Parry'],
+      ['LShift','Sprint'],
+    ];
+    const rows2=[
+      ['← / →','Move left / right'],
+      ['↑','Jump'],
+      ['↓','Crouch'],
+      ['L','Attack'],
+      [';','Parry'],
+      ['RShift','Sprint'],
+    ];
+
+    rows.forEach(([k,d],i)=>{
+      const ry=rowStart+i*rowH;
+      ctx.save(); ctx.textAlign='left';
+      // key badge
+      ctx.fillStyle='rgba(78,205,196,0.1)';
+      ctx.fillRect(c1,ry-14,52,19);
+      ctx.strokeStyle='rgba(78,205,196,0.3)'; ctx.lineWidth=1;
+      ctx.strokeRect(c1,ry-14,52,19);
+      ctx.font='bold 11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.9)';
+      ctx.fillText(k,c1+6,ry);
+      // desc
+      ctx.font='12px "Courier New"'; ctx.fillStyle='rgba(210,230,225,0.75)';
+      ctx.fillText(d,c1+60,ry);
+      ctx.restore();
+    });
+
+    rows2.forEach(([k,d],i)=>{
+      const ry=rowStart+i*rowH;
+      ctx.save(); ctx.textAlign='left';
+      ctx.fillStyle='rgba(78,205,196,0.1)';
+      ctx.fillRect(c2,ry-14,60,19);
+      ctx.strokeStyle='rgba(78,205,196,0.3)'; ctx.lineWidth=1;
+      ctx.strokeRect(c2,ry-14,60,19);
+      ctx.font='bold 11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.9)';
+      ctx.fillText(k,c2+6,ry);
+      ctx.font='12px "Courier New"'; ctx.fillStyle='rgba(210,230,225,0.75)';
+      ctx.fillText(d,c2+70,ry);
+      ctx.restore();
+    });
+
+    // divider line between columns
+    ctx.strokeStyle='rgba(78,205,196,0.12)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(cx,by+70); ctx.lineTo(cx,by+bh-60); ctx.stroke();
+
+    // notes at bottom
+    ctx.save(); ctx.textAlign='center';
+    ctx.strokeStyle='rgba(78,205,196,0.2)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(bx+50,by+bh-72); ctx.lineTo(bx+bw-50,by+bh-72); ctx.stroke();
+    ctx.font='bold 12px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.75)';
+    ctx.fillText('ONLINE — both players use WASD + J on their own machine',cx,by+bh-50);
+    ctx.fillText('ONE HIT KILLS  ·  [ \ ] toggle hitboxes in-game',cx,by+bh-30);
+    ctx.font='10px "Courier New"'; ctx.fillStyle='rgba(100,140,130,0.45)';
+    ctx.fillText('CLICK or ENTER to close',cx,by+bh-10);
     ctx.restore();
   }
 }
@@ -359,7 +533,10 @@ function showOnlineLobby(prefillError){
   function draw(){
     if(!alive) return;
     requestAnimationFrame(draw);
-    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#080b0a'; ctx.fillRect(0,0,W,H);
+    // grid
+    ctx.strokeStyle='rgba(78,205,196,0.03)'; ctx.lineWidth=1;
+    for(let x=-H;x<W+H;x+=38){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x+H,H);ctx.stroke();}
 
     if(phase==='connecting'){
       ctx.save(); ctx.textAlign='center'; ctx.fillStyle='#4ecdc4';
@@ -372,24 +549,34 @@ function showOnlineLobby(prefillError){
 
     if(phase==='waiting_opponent'){
       ctx.save(); ctx.textAlign='center';
-      ctx.fillStyle='#4ecdc4'; ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=14;
-      ctx.font='bold 26px "Courier New"';
-      ctx.fillText('ROOM CREATED',W/2,H/2-90);
+      // panel
+      const wpx=W/2-180,wpy=H/2-140,wpw=360,wph=280;
+      const wpg=ctx.createLinearGradient(wpx,wpy,wpx,wpy+wph);
+      wpg.addColorStop(0,'rgba(8,20,16,0.98)'); wpg.addColorStop(1,'rgba(4,10,8,0.98)');
+      ctx.fillStyle=wpg; ctx.fillRect(wpx,wpy,wpw,wph);
+      ctx.strokeStyle='rgba(78,205,196,0.55)'; ctx.lineWidth=1.5; ctx.strokeRect(wpx,wpy,wpw,wph);
+      // corner marks
+      ctx.strokeStyle='rgba(78,205,196,0.5)'; ctx.lineWidth=2;
+      [[wpx,wpy],[wpx+wpw,wpy],[wpx,wpy+wph],[wpx+wpw,wpy+wph]].forEach(([ox,oy])=>{
+        const sx=ox===wpx?1:-1,sy=oy===wpy?1:-1;
+        ctx.beginPath();ctx.moveTo(ox+sx*12,oy);ctx.lineTo(ox,oy);ctx.lineTo(ox,oy+sy*12);ctx.stroke();
+      });
+      ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=18;
+      ctx.font='bold 22px "Courier New"'; ctx.fillStyle='#4ecdc4';
+      ctx.fillText('ROOM CREATED',W/2,H/2-98);
       ctx.shadowBlur=0;
-      ctx.font='14px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.7)';
-      ctx.fillText('Share this code with your opponent:',W/2,H/2-52);
-      // code box
-      ctx.fillStyle='rgba(78,205,196,0.1)';
-      ctx.fillRect(W/2-130,H/2-38,260,78);
-      ctx.strokeStyle='#4ecdc4'; ctx.lineWidth=2;
-      ctx.strokeRect(W/2-130,H/2-38,260,78);
-      ctx.font='bold 64px "Courier New"'; ctx.fillStyle='#fff';
-      ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=28;
-      ctx.fillText(roomCode,W/2,H/2+30);
+      ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(180,220,210,0.55)';
+      ctx.fillText('share this code with your opponent',W/2,H/2-72);
+      // code display
+      ctx.fillStyle='rgba(78,205,196,0.08)'; ctx.fillRect(W/2-110,H/2-58,220,70);
+      ctx.strokeStyle='rgba(78,205,196,0.4)'; ctx.lineWidth=1; ctx.strokeRect(W/2-110,H/2-58,220,70);
+      ctx.font='bold 58px "Courier New"'; ctx.fillStyle='#fff';
+      ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=30; ctx.fillText(roomCode,W/2,H/2+2);
       ctx.shadowBlur=0;
-      ctx.font='13px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.4)';
-      ctx.fillText('Waiting for opponent'+dots(),W/2,H/2+62);
-      ctx.fillText('ESC to cancel',W/2,H/2+86);
+      ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(255,255,255,0.35)';
+      ctx.fillText('Waiting for opponent'+dots(),W/2,H/2+36);
+      ctx.fillStyle='rgba(100,140,130,0.4)'; ctx.font='10px "Courier New"';
+      ctx.fillText('ESC to cancel',W/2,H/2+60);
       ctx.restore(); return;
     }
 
@@ -404,34 +591,54 @@ function showOnlineLobby(prefillError){
 
     // phase === 'choose'
     ctx.save(); ctx.textAlign='center';
-    ctx.font='bold 36px "Courier New"'; ctx.fillStyle='#4ecdc4';
-    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=12;
-    ctx.fillText('ONLINE DUEL',W/2,80); ctx.restore();
-    ctx.save(); ctx.strokeStyle='rgba(78,205,196,0.25)'; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(W/2-200,98); ctx.lineTo(W/2+200,98); ctx.stroke(); ctx.restore();
+    ctx.font='bold 42px "Courier New"';
+    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=22;
+    ctx.fillStyle='rgba(78,205,196,0.25)'; ctx.fillText('ONLINE DUEL',W/2,78);
+    ctx.shadowBlur=14; ctx.fillStyle='#fff'; ctx.fillText('ONLINE DUEL',W/2,78);
+    ctx.shadowBlur=0;
+    ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.5)';
+    ctx.fillText('◈  GROTTO DUEL  ◈',W/2,100);
+    ctx.restore();
+    ctx.save(); const lg2=ctx.createLinearGradient(W/2-220,0,W/2+220,0);
+    lg2.addColorStop(0,'rgba(78,205,196,0)'); lg2.addColorStop(0.5,'rgba(78,205,196,0.3)'); lg2.addColorStop(1,'rgba(78,205,196,0)');
+    ctx.strokeStyle=lg2; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(W/2-220,112); ctx.lineTo(W/2+220,112); ctx.stroke(); ctx.restore();
 
-    const bw=300,bh=52,bx=W/2-bw/2;
+    const bw=320,bh=52,bx=W/2-bw/2;
 
     // CREATE button
-    const createY=165;
+    const createY=168;
     rects[0]={x:bx,y:createY-36,w:bw,h:bh};
     ctx.save(); ctx.textAlign='center';
-    ctx.fillStyle='rgba(78,205,196,0.1)'; ctx.fillRect(bx,createY-36,bw,bh);
-    ctx.strokeStyle='rgba(78,205,196,0.5)'; ctx.lineWidth=1; ctx.strokeRect(bx,createY-36,bw,bh);
-    ctx.font='bold 22px "Courier New"'; ctx.fillStyle='#4ecdc4';
-    ctx.fillText('CREATE ROOM',W/2,createY+2);
+    const cg=ctx.createLinearGradient(bx,0,bx+bw,0);
+    cg.addColorStop(0,'rgba(78,205,196,0.0)'); cg.addColorStop(0.5,'rgba(78,205,196,0.14)'); cg.addColorStop(1,'rgba(78,205,196,0.0)');
+    ctx.fillStyle=cg; ctx.fillRect(bx,createY-36,bw,bh);
+    ctx.strokeStyle='rgba(78,205,196,0.6)'; ctx.lineWidth=1.5; ctx.strokeRect(bx,createY-36,bw,bh);
+    // left/right accent bars
+    ctx.fillStyle='rgba(78,205,196,0.7)'; ctx.fillRect(bx,createY-36,3,bh); ctx.fillRect(bx+bw-3,createY-36,3,bh);
+    ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=10;
+    ctx.font='bold 20px "Courier New"'; ctx.fillStyle='#ffffff';
+    ctx.fillText('CREATE ROOM',W/2,createY+1);
+    ctx.shadowBlur=0;
     ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.6)';
-    ctx.fillText('get a code to share with your opponent',W/2,createY+18);
+    ctx.fillText('generate a code to share with your opponent',W/2,createY+17);
     ctx.restore();
 
-    ctx.save(); ctx.textAlign='center'; ctx.fillStyle='rgba(130,170,160,0.5)';
-    ctx.font='13px "Courier New"'; ctx.fillText('— or —',W/2,245); ctx.restore();
+    // or divider
+    ctx.save(); ctx.textAlign='center';
+    const dg=ctx.createLinearGradient(W/2-120,0,W/2+120,0);
+    dg.addColorStop(0,'rgba(78,205,196,0)'); dg.addColorStop(0.5,'rgba(78,205,196,0.25)'); dg.addColorStop(1,'rgba(78,205,196,0)');
+    ctx.strokeStyle=dg; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(W/2-120,248); ctx.lineTo(W/2+120,248); ctx.stroke();
+    ctx.font='11px "Courier New"'; ctx.fillStyle='rgba(78,205,196,0.4)';
+    ctx.fillText('or',W/2,244);
+    ctx.restore();
 
-    ctx.save(); ctx.textAlign='center'; ctx.font='bold 15px "Courier New"';
-    ctx.fillStyle='rgba(180,220,210,0.75)'; ctx.fillText('JOIN WITH CODE',W/2,278); ctx.restore();
+    ctx.save(); ctx.textAlign='center'; ctx.font='bold 13px "Courier New"';
+    ctx.fillStyle='rgba(78,205,196,0.7)'; ctx.fillText('JOIN WITH CODE',W/2,274); ctx.restore();
 
     // 4 letter boxes
-    const boxW=54,boxH=60,boxGap=12;
+    const boxW=56,boxH=62,boxGap=12;
     const totalW=4*boxW+3*boxGap, startX=W/2-totalW/2, boxY=292;
     for(let i=0;i<4;i++){
       const bxi=startX+i*(boxW+boxGap);
@@ -452,16 +659,24 @@ function showOnlineLobby(prefillError){
     }
 
     // JOIN button
-    const jY=378; rects[1]={x:bx,y:jY,w:bw,h:44};
+    const jY=382; rects[1]={x:bx,y:jY,w:bw,h:46};
     const canJoin=joinCode.length===4;
     ctx.save(); ctx.textAlign='center';
-    ctx.fillStyle=canJoin?'rgba(78,205,196,0.1)':'rgba(255,255,255,0.02)';
-    ctx.fillRect(bx,jY,bw,44);
-    ctx.strokeStyle=canJoin?'rgba(78,205,196,0.5)':'rgba(255,255,255,0.08)';
-    ctx.lineWidth=1; ctx.strokeRect(bx,jY,bw,44);
-    ctx.font='bold 20px "Courier New"';
-    ctx.fillStyle=canJoin?'#4ecdc4':'rgba(100,130,120,0.35)';
-    ctx.fillText('JOIN ROOM',W/2,jY+28); ctx.restore();
+    if(canJoin){
+      const jg=ctx.createLinearGradient(bx,0,bx+bw,0);
+      jg.addColorStop(0,'rgba(78,205,196,0.0)'); jg.addColorStop(0.5,'rgba(78,205,196,0.14)'); jg.addColorStop(1,'rgba(78,205,196,0.0)');
+      ctx.fillStyle=jg; ctx.fillRect(bx,jY,bw,46);
+      ctx.fillStyle='rgba(78,205,196,0.7)'; ctx.fillRect(bx,jY,3,46); ctx.fillRect(bx+bw-3,jY,3,46);
+      ctx.strokeStyle='rgba(78,205,196,0.55)';
+    } else {
+      ctx.fillStyle='rgba(255,255,255,0.02)'; ctx.fillRect(bx,jY,bw,46);
+      ctx.strokeStyle='rgba(255,255,255,0.07)';
+    }
+    ctx.lineWidth=1.5; ctx.strokeRect(bx,jY,bw,46);
+    ctx.font='bold 18px "Courier New"';
+    if(canJoin){ ctx.shadowColor='#4ecdc4'; ctx.shadowBlur=8; ctx.fillStyle='#ffffff'; }
+    else        { ctx.fillStyle='rgba(100,130,120,0.3)'; }
+    ctx.fillText('JOIN ROOM',W/2,jY+29); ctx.restore();
 
     if(errorMsg){
       ctx.save(); ctx.textAlign='center'; ctx.font='bold 13px "Courier New"';
@@ -469,9 +684,9 @@ function showOnlineLobby(prefillError){
       ctx.fillText(errorMsg,W/2,440); ctx.restore();
     }
 
-    ctx.save(); ctx.textAlign='center'; ctx.fillStyle='rgba(100,140,130,0.45)';
-    ctx.font='11px "Courier New"';
-    ctx.fillText('ESC to go back  ·  type or paste code then ENTER',W/2,H-18); ctx.restore();
+    ctx.save(); ctx.textAlign='center'; ctx.fillStyle='rgba(78,205,196,0.22)';
+    ctx.font='10px "Courier New"';
+    ctx.fillText('ESC  go back    ·    type or paste your 4-letter code, then ENTER',W/2,H-16); ctx.restore();
   }
 
   requestAnimationFrame(draw);
