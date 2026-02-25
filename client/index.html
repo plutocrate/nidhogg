@@ -35,7 +35,9 @@
       align-items: center;
       justify-content: center;
       z-index: 100;
-      transition: opacity 0.5s;
+      transition: opacity 0.4s ease;
+      /* Never block canvas mouse/keyboard events — loading is purely visual */
+      pointer-events: none;
     }
     #loading h1 {
       color: #4ecdc4;

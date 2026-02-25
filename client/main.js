@@ -535,13 +535,32 @@ function startLocal(mode){
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded',()=>{
-  const bar=document.getElementById('load-bar');
-  const scr=document.getElementById('loading');
-  let p=0;
-  const iv=setInterval(()=>{
-    p+=Math.random()*20; if(p>100)p=100;
-    if(bar) bar.style.width=p+'%';
-    if(p>=100){ clearInterval(iv); setTimeout(()=>{ if(scr)scr.classList.add('hidden'); new Menu(); },250); }
-  },70);
+window.addEventListener('DOMContentLoaded', () => {
+  const bar = document.getElementById('load-bar');
+  const scr = document.getElementById('loading');
+
+  function showMenu() {
+    if (scr) {
+      scr.style.opacity = '0';
+      scr.style.pointerEvents = 'none';
+      // Remove from DOM after fade so it can never block input
+      setTimeout(() => { if (scr.parentNode) scr.parentNode.removeChild(scr); }, 600);
+    }
+    new Menu();
+  }
+
+  // Fill bar quickly then launch — guaranteed to complete
+  let p = 0;
+  const iv = setInterval(() => {
+    p += 18 + Math.random() * 22;
+    if (p >= 100) p = 100;
+    if (bar) bar.style.width = p + '%';
+    if (p >= 100) {
+      clearInterval(iv);
+      setTimeout(showMenu, 200);
+    }
+  }, 60);
+
+  // Hard failsafe: if something goes wrong, show menu after 2s regardless
+  setTimeout(() => { if (p < 100) { p = 100; clearInterval(iv); showMenu(); } }, 2000);
 });
