@@ -47,16 +47,16 @@ const MAJORITY    = 3;
 // Hitboxes — calibrated to new 48×48 sprite sheets
 // HW/HH are half-widths in world pixels, anchor at feet (y = FLOOR_Y)
 const HB = {
-  heavy: { hw: 22, hh: 44 },   // HeavyBandit (P1 / knight)
-  light: { hw: 20, hh: 42 },   // LightBandit (P2 / thief)
+  heavy: { hw: 36, hh: 115 },   // HeavyBandit (P1 / knight)
+  light: { hw: 32, hh: 110 },   // LightBandit (P2 / thief)
 };
 // Parry box: forward-facing rectangle that deflects incoming sword tips
 const PARRY_HB = {
-  heavy: { fw: 38, fh: 28 },
-  light: { fw: 34, fh: 26 },
+  heavy: { fw: 70, fh: 55 },
+  light: { fw: 65, fh: 52 },
 };
 // How far sword tip extends beyond body edge
-const SWORD_REACH = { heavy: 58, light: 52 };
+const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 500, light: 280 };
 
 const BROADCAST_MS = 20;

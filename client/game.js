@@ -27,16 +27,16 @@ const VH = 540;
 // HW/HH are in world-pixels (same coordinate space as x,y).
 // SWORD_REACH: tip extends this many px beyond body edge.
 const HB = {
-  heavy: { hw: 22, hh: 44 },   // HeavyBandit (knight/p1)
-  light: { hw: 20, hh: 42 },   // LightBandit (thief/p2)
+  heavy: { hw: 36, hh: 115 },   // HeavyBandit (knight/p1)
+  light: { hw: 32, hh: 110 },   // LightBandit (thief/p2)
 };
 // Parry box: a wide shallow horizontal rectangle in front of the character
 // that blocks incoming sword tips while parrying.
 const PARRY_HB = {
-  heavy: { fw: 38, fh: 28 },   // fw = forward reach, fh = vertical span
-  light: { fw: 34, fh: 26 },
+  heavy: { fw: 70, fh: 55 },   // fw = forward reach, fh = vertical span
+  light: { fw: 65, fh: 52 },
 };
-const SWORD_REACH = { heavy: 58, light: 52 };
+const SWORD_REACH = { heavy: 85, light: 78 };
 const ATTACK_DUR  = { heavy: 500, light: 280 };
 
 // Camera
@@ -151,7 +151,7 @@ class Player {
     this.x = x; this.y = FLOOR_Y;
     this.vx = 0; this.vy = 0;
     this.grounded = true; this.facingRight = (id === 1);
-    this.sprite.flipX = (id === 2);
+    this.sprite.flipX = (id === 1);  // id=1 faces right → flip left-facing sheet
     this.alive = true; this.dead = false; this.deadTimer = 0;
     this.deadX = 0; this.deadY = 0; this.deadVx = 0; this.deadVy = 0; this.deadAngle = 0;
     this.attacking = false; this.attackTimer = 0; this.attackCd = 0;
@@ -171,7 +171,7 @@ class Player {
     this.parrying = s.parrying || false;
     this.sprinting = s.sprinting || false;
     this.anim = s.anim; this.score = s.score;
-    this.sprite.flipX = !s.facingRight;
+    this.sprite.flipX = s.facingRight;
     if (this.sprite.anim !== s.anim) this.sprite.play(s.anim);
     if (this.dead) {
       this.deadX = s.deadX; this.deadY = s.deadY;
@@ -215,7 +215,7 @@ class Player {
       ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
       ctx.translate(this.deadX, this.deadY);
       ctx.rotate(this.deadAngle);
-      this.sprite.flipX = !this.facingRight;
+      this.sprite.flipX = this.facingRight;
       this.sprite.draw(ctx, 0, 0, alpha);
       ctx.restore();
       return;
@@ -436,8 +436,8 @@ export class Game {
     this.p1 = new Player(1, WORLD_W * 0.25, 'heavy');
     this.p2 = new Player(2, WORLD_W * 0.75, 'light');
     this.p1.score = s1; this.p2.score = s2;
-    this.p1.facingRight = true;  this.p1.sprite.flipX = false;
-    this.p2.facingRight = false; this.p2.sprite.flipX = true;
+    this.p1.facingRight = true;  this.p1.sprite.flipX = true;
+    this.p2.facingRight = false; this.p2.sprite.flipX = false;
     this.cam = new Camera();
   }
 
@@ -691,7 +691,8 @@ export class Game {
     }
 
     // Animation state
-    p.sprite.flipX = !p.facingRight;
+    // Sprite sheet faces LEFT by default → flip when facing right
+    p.sprite.flipX = p.facingRight;
     if      (p.attacking)  p.sprite.play('attack');
     else if (p.parrying)   p.sprite.play('parry');
     else if (p.crouching)  p.sprite.play('crouch');
