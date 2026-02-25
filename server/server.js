@@ -94,8 +94,9 @@ const MOVE_SPEED  = 5.5;
 const SPRINT_SPEED= 9.5;
 const JUMP_VEL    = -19;
 const GRAVITY     = 0.72;
-const ATTACK_CD   = 380;
-const PARRY_DUR   = 400;     // ms parry window active
+const ATTACK_CD   = 480;
+const ATTACK_GROW_MS = 700;
+const PARRY_DUR   = 650;     // ms parry window active
 const PARRY_CD    = 800;     // ms cooldown after parry
 const TICK_MS     = 1000 / 60;
 const ROUND_DELAY = 2800;
@@ -110,12 +111,12 @@ const HB = {
 };
 // Parry box: forward-facing rectangle that deflects incoming sword tips
 const PARRY_HB = {
-  heavy: { fw: 70, fh: 55 },
-  light: { fw: 65, fh: 52 },
+  heavy: { fw: 85, fh: 63 },
+  light: { fw: 78, fh: 60 },
 };
 // How far sword tip extends beyond body edge
 const SWORD_REACH = { heavy: 85, light: 78 };
-const ATTACK_DUR  = { heavy: 500, light: 280 };
+const ATTACK_DUR  = { heavy: 900, light: 750 };
 
 const BROADCAST_MS = 20;
 
@@ -137,10 +138,13 @@ class SPlayer {
   }
 
   swordTip() {
-    const dir = this.facingRight ? 1 : -1;
-    const hb  = HB[this.char];
+    const dir      = this.facingRight ? 1 : -1;
+    const hb       = HB[this.char];
+    // Reach grows 0 → SWORD_REACH over ATTACK_GROW_MS (same formula as client)
+    const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
+    const curReach = this.attacking ? SWORD_REACH[this.char] * growFrac : SWORD_REACH[this.char];
     return {
-      x: this.x + dir * (hb.hw + SWORD_REACH[this.char]),
+      x: this.x + dir * (hb.hw + curReach),
       y: this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0),
     };
   }
@@ -154,16 +158,16 @@ class SPlayer {
     };
   }
 
-  // Returns the parry deflection box (in front of defender while parrying)
+  // Parry box — centred on body, fw in each direction. Instant full size.
+  // Mirrors _localHit() parry check on the client exactly.
   parryBox() {
     const hb  = HB[this.char];
     const phb = PARRY_HB[this.char];
-    const pLeft  = this.x + (this.facingRight ? hb.hw : -(hb.hw + phb.fw));
     return {
-      left:   pLeft,
-      right:  pLeft + phb.fw,
-      top:    this.y - hb.hh * 0.5 - phb.fh / 2,
-      bottom: this.y - hb.hh * 0.5 + phb.fh / 2,
+      left:   this.x - phb.fw,
+      right:  this.x + phb.fw,
+      top:    this.y - hb.hh * 0.85,
+      bottom: this.y - hb.hh * 0.15,
     };
   }
 
@@ -346,19 +350,26 @@ class Room {
   _checkHit(atk, def) {
     if (!atk.attacking || !atk.alive || !def.alive) return false;
     const tip = atk.swordTip();
+
+    // Parry FIRST — mirrors client _localHit() order.
+    // Defender must face the attacker to block.
+    if (def.parrying) {
+      const facingAtk = (def.facingRight  && atk.x >= def.x) ||
+                        (!def.facingRight && atk.x <= def.x);
+      if (facingAtk) {
+        const pb = def.parryBox();
+        if (tip.x >= pb.left && tip.x <= pb.right &&
+            tip.y >= pb.top  && tip.y <= pb.bottom) {
+          return 'parried';
+        }
+      }
+    }
+
+    // Body hit
     const box = def.bodyBox();
     const bodyHit = tip.x >= box.left && tip.x <= box.right &&
                     tip.y >= box.top  && tip.y <= box.bottom;
-    if (!bodyHit) return false;
-
-    if (def.parrying) {
-      const pb = def.parryBox();
-      if (tip.x >= pb.left && tip.x <= pb.right &&
-          tip.y >= pb.top  && tip.y <= pb.bottom) {
-        return 'parried';
-      }
-    }
-    return true;
+    return bodyHit ? true : false;
   }
 
   _resolveKill(atk, def) {

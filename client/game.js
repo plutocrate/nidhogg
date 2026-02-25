@@ -2,7 +2,6 @@
 import { InputManager } from './input.js';
 import { AudioManager }  from './audio.js';
 
-//updated
 // ── Constants (must mirror server exactly) ────────────────────────────────────
 const WORLD_W     = 3200;
 const FLOOR_Y     = 460;
@@ -10,8 +9,9 @@ const MOVE_SPEED  = 5.5;
 const SPRINT_SPEED= 9.5;        // sprint is ~1.7× walk
 const JUMP_VEL    = -19;
 const GRAVITY     = 0.72;
-const ATTACK_CD   = 380;
-const PARRY_DUR   = 650;        // ms parry window stays active — wider window for same-frame hits
+const ATTACK_CD   = 480;
+const ATTACK_GROW_MS = 700;       // ms for reach to grow from 0 → full SWORD_REACH
+const PARRY_DUR   = 650;        // ms parry window stays active
 const PARRY_CD    = 800;        // ms cooldown after parry ends
 const ROUND_DELAY = 2800;
 const MAX_ROUNDS  = 5;
@@ -33,12 +33,15 @@ const HB = {
 };
 // Parry box: a wide shallow horizontal rectangle in front of the character
 // that blocks incoming sword tips while parrying.
+// Parry box = attack box at full extension (fw=SWORD_REACH, fh=hh*0.55).
+// Box is centred on body, spans fw in BOTH directions so it covers the
+// full attack zone regardless of which way the attacker is coming from.
 const PARRY_HB = {
-  heavy: { fw: 125, fh: 100 },  // fw = full attack reach (hw+SWORD_REACH), fh = full body height
-  light: { fw: 115, fh: 95  },
+  heavy: { fw: 85, fh: 63 },   // fw = SWORD_REACH[heavy], fh = hh*0.55
+  light: { fw: 78, fh: 60 },   // fw = SWORD_REACH[light], fh = hh*0.55
 };
 const SWORD_REACH = { heavy: 85, light: 78 };
-const ATTACK_DUR  = { heavy: 500, light: 280 };
+const ATTACK_DUR  = { heavy: 900, light: 750 };  // total duration; reach grows for first 700ms
 
 // Camera
 const CAM_LERP    = 0.085;
@@ -244,23 +247,25 @@ class Player {
       hb.hh
     );
 
-    // Sword tip marker (red dot)
-    const sr = SWORD_REACH[this.key];
-    const tipX = this.x + dir * (hb.hw + sr);
+    // Sword tip — grows with attackTimer when attacking
+    const sr       = SWORD_REACH[this.key];
+    const growFrac = this.attacking ? Math.min(this.attackTimer / ATTACK_GROW_MS, 1) : 1;
+    const curReach = this.attacking ? sr * growFrac : sr;
+    const tipX = this.x + dir * (hb.hw + curReach);
     const tipY = this.y - hb.hh * 0.6 + (this.crouching ? hb.hh * 0.35 : 0);
     ctx.fillStyle = 'rgba(255,50,50,0.9)';
     ctx.beginPath(); ctx.arc(tipX, tipY, 3, 0, Math.PI * 2); ctx.fill();
 
-    // Sword line (red)
+    // Sword line — grows with attack
     ctx.strokeStyle = 'rgba(255,80,80,0.70)';
     ctx.beginPath();
     ctx.moveTo(this.x + dir * hb.hw, tipY);
     ctx.lineTo(tipX, tipY);
     ctx.stroke();
 
-    // Attack box (orange) — sword sweep zone, visible while attacking
+    // Attack box (orange) — GROWS from 0 → SWORD_REACH over ATTACK_GROW_MS
     if (this.attacking) {
-      const atkW = sr;
+      const atkW = sr * growFrac;                      // width grows with timer
       const atkH = hb.hh * 0.55;
       const atkX = this.facingRight ? this.x + hb.hw : this.x - hb.hw - atkW;
       const atkY = this.y - hb.hh * 0.6 - atkH * 0.5 + (this.crouching ? hb.hh * 0.35 : 0);
@@ -271,14 +276,16 @@ class Player {
       ctx.fillRect(atkX, atkY, atkW, atkH);
     }
 
-    // Parry box (cyan) — only visible while parrying
+    // Parry box (cyan) — instant full size, same dims as attack at full extension
+    // Centred on body, fw in each direction
     if (this.parrying) {
+      const atkH = hb.hh * 0.55;
       ctx.strokeStyle = 'rgba(0,220,255,0.90)';
       ctx.strokeRect(
-        this.x + (this.facingRight ? hb.hw : -(hb.hw + phb.fw)),
-        this.y - hb.hh * 0.5 - phb.fh / 2,
-        phb.fw,
-        phb.fh
+        this.x - phb.fw,
+        this.y - hb.hh * 0.85,
+        phb.fw * 2,
+        hb.hh * 0.70
       );
     }
 
@@ -737,72 +744,70 @@ export class Game {
   // Returns: false (no hit), true (kill), or 'parried'
   _localHit(atk, def) {
     if (!atk.attacking || !atk.alive || !def.alive) return false;
-    const dir  = atk.facingRight ? 1 : -1;
-    const hbA  = HB[atk.key];
-    const tipX = atk.x + dir * (hbA.hw + SWORD_REACH[atk.key]);
+    const dir = atk.facingRight ? 1 : -1;
+    const hbA = HB[atk.key];
+
+    // Growing reach: 0 → SWORD_REACH over ATTACK_GROW_MS, then holds at max.
+    const growFrac   = Math.min(atk.attackTimer / ATTACK_GROW_MS, 1);
+    const curReach   = SWORD_REACH[atk.key] * growFrac;
+    const tipX = atk.x + dir * (hbA.hw + curReach);
     const tipY = atk.y - hbA.hh * 0.6 + (atk.crouching ? hbA.hh * 0.35 : 0);
+
     const hbD  = HB[def.key];
     const yOff = def.crouching ? hbD.hh * 0.3 : 0;
 
-    // ── PARRY CHECK FIRST — before body hit ──────────────────────────────────
-    // Critical: body box is large so parry must be evaluated first.
-    // If defender is parrying and facing the attacker, the parry box covers
-    // the full attack zone (same width as sword reach + body half).
-    // Any tip reaching the defender's front half is blocked.
+    // ── PARRY CHECKED FIRST ──────────────────────────────────────────────────
+    // Must come before body check: body box is large and would shadow the parry.
+    // Parry box is the same size as the attack box at full extension — instant.
+    // Defender must be facing the attacker to block (can't parry from behind).
     if (def.parrying) {
-      const facingAtk = (def.facingRight && atk.x >= def.x) ||
+      const facingAtk = (def.facingRight  && atk.x >= def.x) ||
                         (!def.facingRight && atk.x <= def.x);
       if (facingAtk) {
         const phb   = PARRY_HB[def.key];
-        // Parry box spans the full forward zone: from body-centre outward fw pixels
-        const pLeft  = def.facingRight ? def.x - phb.fw : def.x - phb.fw;
-        const pRight = def.facingRight ? def.x + phb.fw : def.x + phb.fw;
-        const pTop   = def.y - hbD.hh;       // top of body
-        const pBot   = def.y;                 // feet
+        // Box is centred on body centre, fw in each direction (covers full zone)
+        const pLeft = def.x - phb.fw;
+        const pRight= def.x + phb.fw;
+        const pTop  = def.y - hbD.hh * 0.85;
+        const pBot  = def.y - hbD.hh * 0.15;
         if (tipX >= pLeft && tipX <= pRight && tipY >= pTop && tipY <= pBot) {
           return 'parried';
         }
       }
     }
 
-    // ── BODY HIT CHECK ───────────────────────────────────────────────────────
+    // ── BODY HIT ─────────────────────────────────────────────────────────────
     const bodyHit = tipX >= def.x - hbD.hw && tipX <= def.x + hbD.hw &&
                     tipY >= def.y - hbD.hh + yOff && tipY <= def.y;
-    if (!bodyHit) return false;
-
-    return true;
+    return bodyHit ? true : false;
   }
 
-  // Attacker (atk) had their attack blocked by defender (def) parrying.
-  // Push atk away — no blood, no kill. Spark effect at contact point only.
+  // Attacker's swing was blocked — push them away, NO blood.
   _parryKnockback(atk, def) {
-    const pushDir = atk.facingRight ? -1 : 1;   // push attacker backward
-    atk.vx        = pushDir * 16;               // strong horizontal push
-    atk.vy        = -6;                         // small upward pop
-    atk.grounded  = false;
-    atk.attacking  = false;                     // cancel attack immediately
+    const pushDir   = atk.facingRight ? -1 : 1;
+    atk.vx          = pushDir * 16;
+    atk.vy          = -5;
+    atk.grounded    = false;
+    atk.attacking   = false;
     atk.attackTimer = 0;
-    atk.attackCd   = ATTACK_CD;                 // full cooldown — no instant retry
-    this.shake.hit(5);
-    // Spark particles at sword-clash point — cyan, NOT blood red
-    const clashX = def.x + (def.facingRight ? 40 : -40);
-    const clashY = def.y - HB[def.key].hh * 0.6;
-    this._clashSpark(clashX, clashY);
+    atk.attackCd    = ATTACK_CD;
+    this.shake.hit(4);
+    // Cyan spark at the clash point — not blood
+    const hbD = HB[def.key];
+    const cx  = def.x + (def.facingRight ? 30 : -30);
+    const cy  = def.y - hbD.hh * 0.6;
+    this._clashSpark(cx, cy);
   }
 
-  // Small cyan spark burst — distinct from blood, signals a block
   _clashSpark(x, y) {
-    for (let i = 0; i < 10; i++) {
-      const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.4;
-      const s = 3 + Math.random() * 6;
+    for (let i = 0; i < 12; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.5;
+      const s = 3 + Math.random() * 7;
       this.fx.p.push({
-        x, y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s - 1,
-        life: 1,
-        decay: 0.045 + Math.random() * 0.03,
-        r: 1.5 + Math.random() * 2,
-        col: `hsl(${175 + Math.random() * 30}, 90%, ${60 + Math.random() * 20}%)`,
+        x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 1,
+        life: 1, decay: 0.04 + Math.random() * 0.025,
+        r: 1.5 + Math.random() * 2.5,
+        col: `hsl(${175 + Math.random() * 30},90%,${60 + Math.random() * 20}%)`,
       });
     }
   }
